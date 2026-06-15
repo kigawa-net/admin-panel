@@ -1,0 +1,23 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+
+# Android
+local.properties
+
+# env
+.env*
+
+# Next.js (removed)
+/.next/
+/node_modules/
