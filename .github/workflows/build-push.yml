@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GIT_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -32,3 +34,16 @@ jobs:
             harbor.kigawa.net/library/admin-panel:main-${{ github.sha }}
           cache-from: type=registry,ref=harbor.kigawa.net/library/admin-panel:buildcache
           cache-to: type=registry,ref=harbor.kigawa.net/library/admin-panel:buildcache,mode=max
+
+      - name: Update manifest image tag
+        run: |
+          cd k8s/overlays/production
+          sed -i 's|newTag:.*|newTag: main-${{ github.sha }}|' kustomization.yaml
+
+      - name: Commit and push manifest update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/overlays/production/kustomization.yaml
+          git commit -m "chore: update admin-panel image tag to main-${{ github.sha }}"
+          git push
