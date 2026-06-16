@@ -7,7 +7,7 @@ bases:
 namespace: kigawa-net-admin-panel
 
 images:
-  - name: ghcr.io/kigawa-net/admin-panel
+  - name: harbor.kigawa.net/library/admin-panel
     newTag: latest
 
 patches:
