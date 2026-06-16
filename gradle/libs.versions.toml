@@ -1,6 +1,7 @@
 [versions]
 kotlin = "2.1.0"
 compose-multiplatform = "1.7.0"
+kobweb = "0.20.4"
 ktor = "3.0.0"
 agp = "8.5.2"
 android-minSdk = "24"
@@ -20,6 +21,9 @@ ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activityCompose" }
+kobweb-core = { module = "com.varabyte.kobweb:kobweb-core", version.ref = "kobweb" }
+kobweb-silk = { module = "com.varabyte.kobweb:kobweb-silk", version.ref = "kobweb" }
+silk-icons-fa = { module = "com.varabyte.kobwebx:silk-icons-fa", version.ref = "kobweb" }
 
 [plugins]
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
@@ -27,3 +31,4 @@ androidApplication = { id = "com.android.application", version.ref = "agp" }
 composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "compose-multiplatform" }
 composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kobweb-application = { id = "com.varabyte.kobweb.application", version.ref = "kobweb" }
