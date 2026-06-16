@@ -27,20 +27,32 @@ fun HomePage() {
     val authState by authProvider.authState.collectAsState()
     val scope = rememberCoroutineScope()
 
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        when (val state = authState) {
-            is AuthState.Unauthenticated -> LoginPage(
-                onLogin = { u, p -> scope.launch { authProvider.login(u, p) } }
-            )
-            is AuthState.Loading -> LoginPage(isLoading = true, onLogin = { _, _ -> })
-            is AuthState.Authenticated -> DashboardPage(
-                username = state.username,
-                onLogout = { authProvider.logout() }
-            )
-            is AuthState.Error -> LoginPage(
+    DisposableEffect(authProvider) {
+        onDispose { authProvider.close() }
+    }
+
+    when (val state = authState) {
+        is AuthState.Unauthenticated -> Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            LoginPage(onLogin = { u, p -> scope.launch { authProvider.login(u, p) } })
+        }
+        is AuthState.Loading -> Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            LoginPage(isLoading = true, onLogin = { _, _ -> })
+        }
+        is AuthState.Authenticated -> DashboardPage(
+            username = state.username,
+            onLogout = { authProvider.logout() }
+        )
+        is AuthState.Error -> Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            LoginPage(
                 error = state.message,
                 onLogin = { u, p -> scope.launch { authProvider.login(u, p) } }
             )

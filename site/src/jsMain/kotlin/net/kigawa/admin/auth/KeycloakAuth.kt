@@ -45,11 +45,9 @@ object DefaultKeycloakConfig {
     val clientId: String = "admin-panel"
 }
 
-class KeycloakAuthProvider {
+class KeycloakAuthProvider : AutoCloseable {
     private val _authState = MutableStateFlow<AuthState>(AuthState.Unauthenticated)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
-
-    private var currentToken: String? = null
 
     private val httpClient = HttpClient(Js) {
         install(ContentNegotiation) {
@@ -79,8 +77,6 @@ class KeycloakAuthProvider {
                 }
             ).body<TokenResponse>()
 
-            currentToken = tokenResponse.accessToken
-
             val userInfo = httpClient.get(userInfoUrl) {
                 bearerAuth(tokenResponse.accessToken)
             }.body<UserInfoResponse>()
@@ -102,7 +98,10 @@ class KeycloakAuthProvider {
     }
 
     fun logout() {
-        currentToken = null
         _authState.value = AuthState.Unauthenticated
+    }
+
+    override fun close() {
+        httpClient.close()
     }
 }
