@@ -4,7 +4,7 @@ kind: Kustomization
 bases:
   - ../../base
 
-namespace: admin-panel
+namespace: kigawa-net-admin-panel
 
 images:
   - name: ghcr.io/kigawa-net/admin-panel
