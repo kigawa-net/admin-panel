@@ -1,7 +1,8 @@
 FROM gradle:8.14.3-jdk21 AS builder
 
 ENV SDKMAN_DIR="/root/.sdkman"
-RUN curl -s "https://get.sdkman.io" | bash && \
+RUN apt-get update && apt-get install -y zip unzip curl && \
+    curl -s "https://get.sdkman.io" | bash && \
     bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install kobweb"
 
 WORKDIR /app
