@@ -16,7 +16,8 @@ spec:
     spec:
       containers:
         - name: admin-panel
-          image: ghcr.io/kigawa-net/admin-panel:latest
+          image: harbor.kigawa.net/library/admin-panel:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 80
           resources:
