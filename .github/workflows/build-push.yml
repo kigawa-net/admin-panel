@@ -14,6 +14,24 @@ jobs:
         with:
           token: ${{ secrets.GIT_TOKEN }}
 
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Install kobweb CLI
+        run: |
+          sudo apt-get install -y zip unzip
+          curl -s "https://get.sdkman.io" | bash
+          source "$HOME/.sdkman/bin/sdkman-init.sh"
+          sdk install kobweb
+          echo "$HOME/.sdkman/candidates/kobweb/current/bin" >> $GITHUB_PATH
+
+      - name: Export kobweb site
+        working-directory: site
+        run: kobweb export --layout static --notty
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
