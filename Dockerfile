@@ -3,12 +3,13 @@ FROM gradle:8.14.3-jdk21 AS builder
 ENV SDKMAN_DIR="/root/.sdkman"
 RUN apt-get update && apt-get install -y zip unzip curl && \
     curl -s "https://get.sdkman.io" | bash && \
-    bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install kobweb"
+    bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install kobweb" && \
+    ln -s $SDKMAN_DIR/candidates/kobweb/current/bin/kobweb /usr/local/bin/kobweb
 
 WORKDIR /app
 COPY . .
 WORKDIR /app/site
-RUN bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && kobweb export --layout static --notty"
+RUN kobweb export --layout static --notty
 
 FROM nginx:alpine
 COPY --from=builder /app/site/.kobweb/site /usr/share/nginx/html
