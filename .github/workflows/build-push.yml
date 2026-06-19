@@ -25,7 +25,7 @@ jobs:
           sudo apt-get install -y zip unzip
           curl -s "https://get.sdkman.io" | bash
           source "$HOME/.sdkman/bin/sdkman-init.sh"
-          sdk install kobweb
+          sdk install kobweb 0.20.4
           echo "$HOME/.sdkman/candidates/kobweb/current/bin" >> $GITHUB_PATH
 
       - name: Export kobweb site
