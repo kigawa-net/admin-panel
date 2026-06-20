@@ -11,13 +11,14 @@ import com.varabyte.kobweb.compose.ui.Alignment
 import com.varabyte.kobweb.compose.ui.Modifier
 import com.varabyte.kobweb.compose.ui.modifiers.*
 import com.varabyte.kobweb.core.Page
+import com.varabyte.kobweb.compose.ui.graphics.Colors
 import com.varabyte.kobweb.silk.components.forms.Button
 import com.varabyte.kobweb.silk.components.forms.Input
-import com.varabyte.kobweb.silk.components.forms.InputType
 import com.varabyte.kobweb.silk.components.text.SpanText
 import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
+import org.jetbrains.compose.web.attributes.InputType
 import org.jetbrains.compose.web.css.*
 
 @Page
@@ -104,7 +105,7 @@ private fun LoginPage(
                 value = username,
                 placeholder = "Username",
                 enabled = !isLoading,
-                onValueChanged = { username = it },
+                onValueChange ={ username = it },
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -113,7 +114,7 @@ private fun LoginPage(
                 value = password,
                 placeholder = "Password",
                 enabled = !isLoading,
-                onValueChanged = { password = it },
+                onValueChange ={ password = it },
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -170,7 +171,7 @@ private fun DashboardPage(
                 horizontalArrangement = Arrangement.spacedBy(12.px)
             ) {
                 SpanText(username)
-                Button(onClick = onLogout) {
+                Button(onClick = { onLogout() }) {
                     SpanText("Logout")
                 }
             }
