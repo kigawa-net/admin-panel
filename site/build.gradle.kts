@@ -8,7 +8,7 @@ plugins {
 }
 
 kotlin {
-    configAsKobwebApplication(includeServer = false)
+    configAsKobwebApplication(moduleName = "admin", includeServer = false)
 
     sourceSets {
         val jsMain by getting {
