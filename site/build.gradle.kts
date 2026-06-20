@@ -2,6 +2,7 @@ import com.varabyte.kobweb.gradle.application.util.configAsKobwebApplication
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kobweb.application)
     alias(libs.plugins.kotlinSerialization)
@@ -13,6 +14,8 @@ kotlin {
     sourceSets {
         val jsMain by getting {
             dependencies {
+                implementation(compose.runtime)
+                implementation(compose.html.core)
                 implementation(libs.kobweb.core)
                 implementation(libs.kobweb.silk)
                 implementation(libs.silk.icons.fa)
