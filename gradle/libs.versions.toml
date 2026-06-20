@@ -1,7 +1,7 @@
 [versions]
-kotlin = "2.1.21"
+kotlin = "2.2.10"
 compose-multiplatform = "1.8.0"
-kobweb = "0.22.0"
+kobweb = "0.23.3"
 ktor = "3.0.0"
 agp = "8.5.2"
 android-minSdk = "24"
