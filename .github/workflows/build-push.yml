@@ -20,24 +20,15 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Install kobweb CLI
-        run: |
-          sudo apt-get install -y zip unzip
-          curl -s "https://get.sdkman.io" | bash
-          source "$HOME/.sdkman/bin/sdkman-init.sh"
-          sdk install kobweb
-          echo "$HOME/.sdkman/candidates/kobweb/current/bin" >> $GITHUB_PATH
-
-      - name: Set up site Gradle wrapper
-        run: |
-          cp gradlew site/gradlew
-          chmod +x site/gradlew
-          mkdir -p site/gradle/wrapper
-          cp gradle/wrapper/gradle-wrapper.properties site/gradle/wrapper/gradle-wrapper.properties
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+          build-root-directory: site
 
       - name: Export kobweb site
         working-directory: site
-        run: kobweb export --layout static --notty
+        run: gradle kobwebExport -PkobwebExportLayout=STATIC --no-daemon
 
       - name: Copy kobweb output for Docker
         run: cp -r site/.kobweb/site dist
