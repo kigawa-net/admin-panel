@@ -16,9 +16,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.await
 import net.kigawa.admin.util.URLSearchParams
 import org.w3c.dom.get
 import org.w3c.dom.set
+import kotlin.js.Promise
 
 sealed class AuthState {
     object Unauthenticated : AuthState()
