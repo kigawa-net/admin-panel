@@ -1,16 +1,17 @@
 # admin-panel
 
-Keycloak認証付き管理パネル。[Kobweb](https://kobweb.varabyte.com/)（Kotlin/JS）で実装され、Nginx静的ファイルサーバーとしてデプロイされる。
+Keycloak認証付き管理パネル。[Kobweb](https://kobweb.varabyte.com/)（Kotlin/JS）フロントエンドと [Ktor](https://ktor.io/) バックエンドで実装される。
 
 ## 技術スタック
 
 | レイヤー | 技術 |
 |---------|------|
 | フロントエンド | Kotlin/JS + Kobweb 0.23.3 + Compose HTML |
+| バックエンド | Kotlin + Ktor server |
 | 認証 | Keycloak (OIDC / Resource Owner Password) |
 | HTTP クライアント | Ktor 3.0.0 |
 | ビルド | Gradle 8.14.2 + Kotlin 2.2.20 |
-| サーバー | Nginx (Alpine) |
+| サーバー | Nginx (Alpine) + Ktor |
 | コンテナレジストリ | Harbor (`harbor.kigawa.net/library/admin-panel`) |
 | デプロイ | ArgoCD GitOps → Kubernetes (`kigawa-net-admin-panel` namespace) |
 

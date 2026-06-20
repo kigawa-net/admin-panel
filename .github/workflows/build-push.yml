@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - claude/focused-newton-momajk
 
 jobs:
   build-push:
