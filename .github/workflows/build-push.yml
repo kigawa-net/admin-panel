@@ -23,12 +23,10 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.10.2'
 
       - name: Export kobweb site
         working-directory: site
-        run: gradle kobwebExport -PkobwebExportLayout=STATIC --no-daemon --stacktrace --info
+        run: ../gradlew kobwebExport -PkobwebExportLayout=STATIC --no-daemon --stacktrace
 
       - name: Copy kobweb output for Docker
         run: cp -r site/.kobweb/site dist
