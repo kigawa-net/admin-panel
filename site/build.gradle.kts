@@ -1,5 +1,8 @@
 import com.varabyte.kobweb.gradle.application.util.configAsKobwebApplication
 
+group = "net.kigawa.admin"
+version = "1.0-SNAPSHOT"
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.composeMultiplatform)
