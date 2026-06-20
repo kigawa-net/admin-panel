@@ -1,3 +1,5 @@
+import com.varabyte.kobweb.gradle.application.util.configAsKobwebApplication
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.composeMultiplatform)
@@ -7,7 +9,7 @@ plugins {
 }
 
 kotlin {
-    configAsKobwebApplication("admin")
+    configAsKobwebApplication(includeServer = false)
 
     sourceSets {
         val jsMain by getting {
