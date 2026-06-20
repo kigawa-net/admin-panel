@@ -10,6 +10,7 @@ import com.varabyte.kobweb.silk.components.text.SpanText
 import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.KeycloakAuthProvider
+import net.kigawa.admin.util.URLSearchParams
 
 @Page("/callback")
 @Composable
@@ -42,6 +43,3 @@ fun CallbackPage() {
     }
 }
 
-private external class URLSearchParams(search: String) {
-    fun get(name: String): String?
-}

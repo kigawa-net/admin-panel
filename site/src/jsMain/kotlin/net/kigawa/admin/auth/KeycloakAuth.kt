@@ -16,9 +16,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import net.kigawa.admin.util.URLSearchParams
 import org.w3c.dom.get
 import org.w3c.dom.set
-import kotlin.random.Random
 
 sealed class AuthState {
     object Unauthenticated : AuthState()
@@ -62,7 +62,13 @@ private const val KEY_USERNAME = "kc_username"
 
 private fun generateRandom(length: Int): String {
     val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
-    return (1..length).map { chars[Random.nextInt(chars.length)] }.joinToString("")
+    val array = js("new Uint8Array(length)") as dynamic
+    js("crypto.getRandomValues(array)")
+    val sb = StringBuilder(length)
+    repeat(length) { i ->
+        sb.append(chars[(array[i] as Int) % chars.length])
+    }
+    return sb.toString()
 }
 
 private suspend fun sha256Base64Url(input: String): String {
@@ -107,16 +113,16 @@ class KeycloakAuthProvider : AutoCloseable {
         localStorage[KEY_STATE] = state
 
         val redirectUri = "${window.location.origin}/callback"
-        val url = "${KeycloakConfig.authUrl}?" +
-            "response_type=code" +
-            "&client_id=${KeycloakConfig.clientId.encodeURLParameter()}" +
-            "&redirect_uri=${redirectUri.encodeURLParameter()}" +
-            "&scope=openid%20profile%20email" +
-            "&state=${state.encodeURLParameter()}" +
-            "&code_challenge=${codeChallenge.encodeURLParameter()}" +
-            "&code_challenge_method=S256"
+        val params = URLSearchParams()
+        params.set("response_type", "code")
+        params.set("client_id", KeycloakConfig.clientId)
+        params.set("redirect_uri", redirectUri)
+        params.set("scope", "openid profile email")
+        params.set("state", state)
+        params.set("code_challenge", codeChallenge)
+        params.set("code_challenge_method", "S256")
 
-        window.location.href = url
+        window.location.href = "${KeycloakConfig.authUrl}?$params"
     }
 
     suspend fun handleCallback(code: String, state: String) {
@@ -179,19 +185,16 @@ class KeycloakAuthProvider : AutoCloseable {
         localStorage.removeItem(KEY_USERNAME)
         _authState.value = AuthState.Unauthenticated
 
-        val redirectUri = window.location.origin
-        val url = "${KeycloakConfig.logoutUrl}?" +
-            "client_id=${KeycloakConfig.clientId.encodeURLParameter()}" +
-            "&post_logout_redirect_uri=${redirectUri.encodeURLParameter()}" +
-            if (token != null) "&id_token_hint=${token.encodeURLParameter()}" else ""
+        val params = URLSearchParams()
+        params.set("client_id", KeycloakConfig.clientId)
+        params.set("post_logout_redirect_uri", window.location.origin)
+        if (token != null) params.set("id_token_hint", token)
 
-        window.location.href = url
+        window.location.href = "${KeycloakConfig.logoutUrl}?$params"
     }
 
     override fun close() {
         httpClient.close()
     }
-
-    private fun String.encodeURLParameter(): String =
-        js("encodeURIComponent(this)") as String
 }
+
