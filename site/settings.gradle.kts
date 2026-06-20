@@ -5,6 +5,10 @@ pluginManagement {
     }
 }
 
+plugins {
+    id("com.varabyte.kobweb.root") version "0.20.4"
+}
+
 dependencyResolutionManagement {
     versionCatalogs {
         create("libs") {
