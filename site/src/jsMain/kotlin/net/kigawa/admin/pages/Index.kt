@@ -13,12 +13,11 @@ import com.varabyte.kobweb.compose.ui.modifiers.*
 import com.varabyte.kobweb.core.Page
 import com.varabyte.kobweb.compose.ui.graphics.Colors
 import com.varabyte.kobweb.silk.components.forms.Button
-import com.varabyte.kobweb.silk.components.forms.Input
 import com.varabyte.kobweb.silk.components.text.SpanText
+import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
-import org.jetbrains.compose.web.attributes.InputType
 import org.jetbrains.compose.web.css.*
 
 @Page
@@ -29,6 +28,7 @@ fun HomePage() {
     val scope = rememberCoroutineScope()
 
     DisposableEffect(authProvider) {
+        authProvider.init()
         onDispose { authProvider.close() }
     }
 
@@ -37,13 +37,13 @@ fun HomePage() {
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            LoginPage(onLogin = { u, p -> scope.launch { authProvider.login(u, p) } })
+            LoginPage(onLogin = { scope.launch { authProvider.startLogin() } })
         }
         is AuthState.Loading -> Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            LoginPage(isLoading = true, onLogin = { _, _ -> })
+            LoginPage(isLoading = true, onLogin = {})
         }
         is AuthState.Authenticated -> DashboardPage(
             username = state.username,
@@ -55,7 +55,7 @@ fun HomePage() {
         ) {
             LoginPage(
                 error = state.message,
-                onLogin = { u, p -> scope.launch { authProvider.login(u, p) } }
+                onLogin = { scope.launch { authProvider.startLogin() } }
             )
         }
     }
@@ -65,11 +65,8 @@ fun HomePage() {
 private fun LoginPage(
     isLoading: Boolean = false,
     error: String? = null,
-    onLogin: (username: String, password: String) -> Unit
+    onLogin: () -> Unit
 ) {
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-
     Box(
         modifier = Modifier
             .width(400.px)
@@ -100,24 +97,6 @@ private fun LoginPage(
                     .color(Colors.Gray)
             )
 
-            Input(
-                type = InputType.Text,
-                value = username,
-                placeholder = "Username",
-                enabled = !isLoading,
-                onValueChange ={ username = it },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Input(
-                type = InputType.Password,
-                value = password,
-                placeholder = "Password",
-                enabled = !isLoading,
-                onValueChange ={ password = it },
-                modifier = Modifier.fillMaxWidth()
-            )
-
             if (error != null) {
                 SpanText(
                     error,
@@ -128,15 +107,11 @@ private fun LoginPage(
             }
 
             Button(
-                onClick = {
-                    if (!isLoading && username.isNotBlank() && password.isNotBlank()) {
-                        onLogin(username, password)
-                    }
-                },
+                onClick = { if (!isLoading) onLogin() },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading && username.isNotBlank() && password.isNotBlank()
+                enabled = !isLoading
             ) {
-                SpanText(if (isLoading) "Signing in..." else "Sign In")
+                SpanText(if (isLoading) "Signing in..." else "Sign in with Keycloak")
             }
         }
     }
