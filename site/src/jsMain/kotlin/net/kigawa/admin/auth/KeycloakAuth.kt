@@ -46,7 +46,7 @@ data class UserInfoResponse(
 
 object KeycloakConfig {
     val serverUrl: String = js("window.__KEYCLOAK_URL__ || 'https://user.kigawa.net'") as String
-    val realm: String = js("window.__KEYCLOAK_REALM__ || 'kigawa-net'") as String
+    val realm: String = js("window.__KEYCLOAK_REALM__ || 'manage'") as String
     val clientId: String = js("window.__KEYCLOAK_CLIENT_ID__ || 'admin-panel'") as String
 
     val authUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/auth"
