@@ -1,16 +1,24 @@
+import com.varabyte.kobweb.gradle.application.util.configAsKobwebApplication
+
+group = "net.kigawa.admin"
+version = "1.0-SNAPSHOT"
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kobweb.application)
     alias(libs.plugins.kotlinSerialization)
 }
 
 kotlin {
-    configAsKobwebApplication("admin")
+    configAsKobwebApplication(moduleName = "admin", includeServer = false)
 
     sourceSets {
         val jsMain by getting {
             dependencies {
+                implementation(compose.runtime)
+                implementation(compose.html.core)
                 implementation(libs.kobweb.core)
                 implementation(libs.kobweb.silk)
                 implementation(libs.silk.icons.fa)

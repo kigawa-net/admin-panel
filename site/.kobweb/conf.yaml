@@ -1,2 +1,11 @@
 site:
   title: "Admin Panel"
+
+server:
+  files:
+    dev:
+      contentRoot: "build/processedResources/js/main/public"
+      script: "build/kotlin-webpack/js/developmentExecutable/admin.js"
+    prod:
+      script: "build/kotlin-webpack/js/productionExecutable/admin.js"
+      siteRoot: ".kobweb/site"
