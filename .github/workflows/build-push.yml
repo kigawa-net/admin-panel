@@ -28,7 +28,7 @@ jobs:
 
       - name: Export kobweb site
         working-directory: site
-        run: gradle kobwebExport -PkobwebExportLayout=STATIC --no-daemon --stacktrace
+        run: gradle kobwebExport -PkobwebExportLayout=STATIC --no-daemon --stacktrace --info
 
       - name: Copy kobweb output for Docker
         run: cp -r site/.kobweb/site dist
