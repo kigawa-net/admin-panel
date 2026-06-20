@@ -28,6 +28,13 @@ jobs:
           sdk install kobweb
           echo "$HOME/.sdkman/candidates/kobweb/current/bin" >> $GITHUB_PATH
 
+      - name: Set up site Gradle wrapper
+        run: |
+          cp gradlew site/gradlew
+          chmod +x site/gradlew
+          mkdir -p site/gradle/wrapper
+          cp gradle/wrapper/gradle-wrapper.properties site/gradle/wrapper/gradle-wrapper.properties
+
       - name: Export kobweb site
         working-directory: site
         run: kobweb export --layout static --notty
