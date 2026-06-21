@@ -8,7 +8,7 @@ namespace: kigawa-net-admin-panel
 
 images:
   - name: harbor.kigawa.net/library/admin-panel
-    newTag: main-6422da7276678449c6c498e9648677206d9ff2ea
+    newTag: main-d12c4801141b7751c906ba97eb8611056d5fa3c4
 
 patches:
   - path: replica-patch.yaml
