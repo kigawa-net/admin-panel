@@ -8,12 +8,19 @@ import io.ktor.client.request.*
 import io.ktor.client.request.forms.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.browser.localStorage
+import kotlinx.browser.window
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.await
+import net.kigawa.admin.util.URLSearchParams
+import org.w3c.dom.get
+import org.w3c.dom.set
+import kotlin.js.Promise
 
 sealed class AuthState {
     object Unauthenticated : AuthState()
@@ -39,10 +46,44 @@ data class UserInfoResponse(
     @SerialName("name") val name: String? = null
 )
 
-object DefaultKeycloakConfig {
-    val serverUrl: String = "http://localhost:8080"
-    val realm: String = "master"
-    val clientId: String = "admin-panel"
+object KeycloakConfig {
+    val serverUrl: String = js("window.__KEYCLOAK_URL__ || 'https://user.kigawa.net'") as String
+    val realm: String = js("window.__KEYCLOAK_REALM__ || 'manage'") as String
+    val clientId: String = js("window.__KEYCLOAK_CLIENT_ID__ || 'admin-panel'") as String
+
+    val authUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/auth"
+    val tokenUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/token"
+    val userInfoUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/userinfo"
+    val logoutUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/logout"
+}
+
+private const val KEY_CODE_VERIFIER = "kc_code_verifier"
+private const val KEY_STATE = "kc_state"
+private const val KEY_ACCESS_TOKEN = "kc_access_token"
+private const val KEY_USERNAME = "kc_username"
+
+private fun generateRandom(length: Int): String {
+    val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    val array = js("new Uint8Array(length)") as dynamic
+    js("crypto.getRandomValues(array)")
+    val sb = StringBuilder(length)
+    repeat(length) { i ->
+        sb.append(chars[(array[i] as Int) % chars.length])
+    }
+    return sb.toString()
+}
+
+private suspend fun sha256Base64Url(input: String): String {
+    val encoder: dynamic = js("new TextEncoder()")
+    val data: dynamic = encoder.encode(input)
+    @Suppress("UNCHECKED_CAST")
+    val hashBuffer = (js("crypto.subtle.digest('SHA-256', data)") as Promise<dynamic>).await()
+    val hashArray: dynamic = js("Array.from(new Uint8Array(hashBuffer))")
+    val base64 = js("btoa(String.fromCharCode.apply(null, hashArray))") as String
+    return base64
+        .replace('+', '-')
+        .replace('/', '_')
+        .trimEnd('=')
 }
 
 class KeycloakAuthProvider : AutoCloseable {
@@ -58,50 +99,105 @@ class KeycloakAuthProvider : AutoCloseable {
         }
     }
 
-    private val tokenUrl =
-        "${DefaultKeycloakConfig.serverUrl}/realms/${DefaultKeycloakConfig.realm}/protocol/openid-connect/token"
+    fun init() {
+        val token = localStorage[KEY_ACCESS_TOKEN]
+        val username = localStorage[KEY_USERNAME]
+        if (token != null && username != null) {
+            _authState.value = AuthState.Authenticated(username = username, accessToken = token)
+        }
+    }
 
-    private val userInfoUrl =
-        "${DefaultKeycloakConfig.serverUrl}/realms/${DefaultKeycloakConfig.realm}/protocol/openid-connect/userinfo"
+    suspend fun startLogin() {
+        val codeVerifier = generateRandom(128)
+        val state = generateRandom(32)
+        val codeChallenge = sha256Base64Url(codeVerifier)
 
-    suspend fun login(username: String, password: String) {
+        localStorage[KEY_CODE_VERIFIER] = codeVerifier
+        localStorage[KEY_STATE] = state
+
+        val redirectUri = "${window.location.origin}/callback"
+        val params = URLSearchParams()
+        params.set("response_type", "code")
+        params.set("client_id", KeycloakConfig.clientId)
+        params.set("redirect_uri", redirectUri)
+        params.set("scope", "openid profile email")
+        params.set("state", state)
+        params.set("code_challenge", codeChallenge)
+        params.set("code_challenge_method", "S256")
+
+        window.location.href = "${KeycloakConfig.authUrl}?$params"
+    }
+
+    suspend fun handleCallback(code: String, state: String) {
         _authState.value = AuthState.Loading
+
+        val savedState = localStorage[KEY_STATE]
+        if (state != savedState) {
+            _authState.value = AuthState.Error("Invalid state parameter")
+            return
+        }
+
+        val codeVerifier = localStorage[KEY_CODE_VERIFIER]
+        if (codeVerifier == null) {
+            _authState.value = AuthState.Error("Missing code verifier")
+            return
+        }
+
+        localStorage.removeItem(KEY_CODE_VERIFIER)
+        localStorage.removeItem(KEY_STATE)
+
         try {
+            val redirectUri = "${window.location.origin}/callback"
             val tokenResponse = httpClient.submitForm(
-                url = tokenUrl,
+                url = KeycloakConfig.tokenUrl,
                 formParameters = parameters {
-                    append("grant_type", "password")
-                    append("client_id", DefaultKeycloakConfig.clientId)
-                    append("username", username)
-                    append("password", password)
+                    append("grant_type", "authorization_code")
+                    append("client_id", KeycloakConfig.clientId)
+                    append("code", code)
+                    append("redirect_uri", redirectUri)
+                    append("code_verifier", codeVerifier)
                 }
             ).body<TokenResponse>()
 
-            val userInfo = httpClient.get(userInfoUrl) {
+            val userInfo = httpClient.get(KeycloakConfig.userInfoUrl) {
                 bearerAuth(tokenResponse.accessToken)
             }.body<UserInfoResponse>()
 
             val displayName = userInfo.name
                 ?: userInfo.preferredUsername
                 ?: userInfo.email
-                ?: username
+                ?: "User"
+
+            localStorage[KEY_ACCESS_TOKEN] = tokenResponse.accessToken
+            localStorage[KEY_USERNAME] = displayName
 
             _authState.value = AuthState.Authenticated(
                 username = displayName,
                 accessToken = tokenResponse.accessToken
             )
+
+            window.location.href = "/"
         } catch (e: Exception) {
-            _authState.value = AuthState.Error(
-                message = e.message ?: "Authentication failed"
-            )
+            _authState.value = AuthState.Error(e.message ?: "Authentication failed")
         }
     }
 
     fun logout() {
+        val token = localStorage[KEY_ACCESS_TOKEN]
+        localStorage.removeItem(KEY_ACCESS_TOKEN)
+        localStorage.removeItem(KEY_USERNAME)
         _authState.value = AuthState.Unauthenticated
+
+        val params = URLSearchParams()
+        params.set("client_id", KeycloakConfig.clientId)
+        params.set("post_logout_redirect_uri", window.location.origin)
+        if (token != null) params.set("id_token_hint", token)
+
+        window.location.href = "${KeycloakConfig.logoutUrl}?$params"
     }
 
     override fun close() {
         httpClient.close()
     }
 }
+
