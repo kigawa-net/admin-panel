@@ -74,12 +74,13 @@ private fun generateRandom(length: Int): String {
 }
 
 private suspend fun sha256Base64Url(input: String): String {
-    val encoder = js("TextEncoder")
-    val data = js("new encoder().encode(input)") as dynamic
-    val hashBuffer = js("crypto.subtle.digest('SHA-256', data)")
-    val hashArray = js("Array.from(new Uint8Array(await hashBuffer))")
-    val base64 = js("btoa(String.fromCharCode.apply(null, hashArray))")
-    return (base64 as String)
+    val encoder: dynamic = js("new TextEncoder()")
+    val data: dynamic = encoder.encode(input)
+    @Suppress("UNCHECKED_CAST")
+    val hashBuffer = (js("crypto.subtle.digest('SHA-256', data)") as Promise<dynamic>).await()
+    val hashArray: dynamic = js("Array.from(new Uint8Array(hashBuffer))")
+    val base64 = js("btoa(String.fromCharCode.apply(null, hashArray))") as String
+    return base64
         .replace('+', '-')
         .replace('/', '_')
         .trimEnd('=')
