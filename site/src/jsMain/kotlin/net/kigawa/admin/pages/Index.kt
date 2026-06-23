@@ -18,6 +18,7 @@ import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
+import net.kigawa.admin.util.URLSearchParams
 import org.jetbrains.compose.web.css.*
 
 @Page
@@ -27,8 +28,13 @@ fun HomePage() {
     val authState by authProvider.authState.collectAsState()
     val scope = rememberCoroutineScope()
 
+    val urlError = remember {
+        URLSearchParams(window.location.search).get("error")
+    }
+
     DisposableEffect(authProvider) {
         authProvider.init()
+        if (urlError != null) authProvider.setError(urlError)
         onDispose { authProvider.close() }
     }
 

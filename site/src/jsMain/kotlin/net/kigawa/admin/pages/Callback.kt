@@ -9,6 +9,7 @@ import com.varabyte.kobweb.core.Page
 import com.varabyte.kobweb.silk.components.text.SpanText
 import kotlinx.browser.window
 import kotlinx.coroutines.launch
+import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.util.URLSearchParams
 
@@ -16,6 +17,7 @@ import net.kigawa.admin.util.URLSearchParams
 @Composable
 fun CallbackPage() {
     val authProvider = remember { KeycloakAuthProvider() }
+    val authState by authProvider.authState.collectAsState()
     val scope = rememberCoroutineScope()
 
     DisposableEffect(Unit) {
@@ -35,6 +37,14 @@ fun CallbackPage() {
         onDispose { authProvider.close() }
     }
 
+    LaunchedEffect(authState) {
+        when (val s = authState) {
+            is AuthState.Authenticated -> window.location.href = "/"
+            is AuthState.Error -> window.location.href = "/?error=${js("encodeURIComponent(s.message)")}"
+            else -> Unit
+        }
+    }
+
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -42,4 +52,3 @@ fun CallbackPage() {
         SpanText("Signing in...")
     }
 }
-

@@ -99,6 +99,10 @@ class KeycloakAuthProvider : AutoCloseable {
         }
     }
 
+    fun setError(message: String) {
+        _authState.value = AuthState.Error(message)
+    }
+
     fun init() {
         val token = localStorage[KEY_ACCESS_TOKEN]
         val username = localStorage[KEY_USERNAME]
