@@ -64,7 +64,7 @@ private const val KEY_USERNAME = "kc_username"
 
 private fun generateRandom(length: Int): String {
     val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
-    val array = js("new Uint8Array(length)") as dynamic
+    val array = js("new Uint8Array(length)")
     js("crypto.getRandomValues(array)")
     val sb = StringBuilder(length)
     repeat(length) { i ->
