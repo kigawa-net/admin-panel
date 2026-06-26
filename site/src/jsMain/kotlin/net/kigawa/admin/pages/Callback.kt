@@ -27,7 +27,11 @@ fun CallbackPage() {
         val error = params.get("error")
 
         when {
-            error != null -> window.location.href = "/?error=${js("encodeURIComponent(error)")}"
+            error != null -> {
+                val p = URLSearchParams()
+                p.set("error", error)
+                window.location.href = "/?$p"
+            }
             code != null && state != null -> scope.launch {
                 authProvider.handleCallback(code, state)
             }
@@ -40,7 +44,11 @@ fun CallbackPage() {
     LaunchedEffect(authState) {
         when (val s = authState) {
             is AuthState.Authenticated -> window.location.href = "/"
-            is AuthState.Error -> window.location.href = "/?error=${js("encodeURIComponent(s.message)")}"
+            is AuthState.Error -> {
+                val p = URLSearchParams()
+                p.set("error", s.message)
+                window.location.href = "/?$p"
+            }
             else -> Unit
         }
     }
