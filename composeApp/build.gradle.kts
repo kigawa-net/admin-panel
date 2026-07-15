@@ -20,6 +20,15 @@ kotlin {
     sourceSets {
         val desktopMain by getting
 
+        // Shared between androidMain and desktopMain: both run on a JVM, so plain
+        // java.security APIs (used for PKCE code generation) can live here once
+        // instead of being duplicated in each platform's actual implementation.
+        val jvmCommonMain by creating {
+            dependsOn(commonMain.get())
+        }
+        androidMain.get().dependsOn(jvmCommonMain)
+        desktopMain.dependsOn(jvmCommonMain)
+
         commonMain.dependencies {
             implementation(compose.runtime)
             implementation(compose.foundation)
