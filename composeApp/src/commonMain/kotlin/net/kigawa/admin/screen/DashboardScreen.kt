@@ -16,7 +16,8 @@ import androidx.compose.ui.unit.dp
 fun DashboardScreen(
     username: String,
     onLogout: () -> Unit,
-    onOpenNetworkMap: () -> Unit
+    onOpenNetworkMap: () -> Unit,
+    onOpenTraffic: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -92,6 +93,20 @@ fun DashboardScreen(
                     )
                     Text(
                         text = "kigawa-net の機器構成を図で確認する",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Card(modifier = Modifier.fillMaxWidth().clickable { onOpenTraffic() }) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "ネットワークトラフィック",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Prometheus から取得した帯域を確認する",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

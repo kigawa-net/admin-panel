@@ -1,0 +1,6 @@
+# CI で `gradle :server:installDist` を実行し、生成物のみをコピーする
+FROM eclipse-temurin:21-jre-alpine
+COPY server/build/install/server /app
+WORKDIR /app
+EXPOSE 8080
+ENTRYPOINT ["bin/server"]

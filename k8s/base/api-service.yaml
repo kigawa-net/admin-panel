@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-panel-api
+spec:
+  selector:
+    app: admin-panel-api
+  ports:
+    - port: 8080
+      targetPort: 8080
