@@ -1,8 +1,9 @@
 package net.kigawa.admin.screen
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,7 +15,8 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun DashboardScreen(
     username: String,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onOpenNetworkMap: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -33,7 +35,7 @@ fun DashboardScreen(
                         Text(username)
                         IconButton(onClick = onLogout) {
                             Icon(
-                                imageVector = Icons.Default.ExitToApp,
+                                imageVector = Icons.AutoMirrored.Filled.ExitToApp,
                                 contentDescription = "Logout"
                             )
                         }
@@ -80,6 +82,20 @@ fun DashboardScreen(
                     value = "0",
                     modifier = Modifier.weight(1f)
                 )
+            }
+
+            Card(modifier = Modifier.fillMaxWidth().clickable { onOpenNetworkMap() }) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "ネットワークマップ",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "kigawa-net の機器構成を図で確認する",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
