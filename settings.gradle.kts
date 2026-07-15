@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "admin-panel"
 include(":composeApp")
+include(":server")

@@ -34,6 +34,9 @@ jobs:
       - name: Copy kobweb output for Docker
         run: cp -r site/.kobweb/site dist
 
+      - name: Build server distribution
+        run: gradle :server:installDist --no-daemon
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -44,7 +47,7 @@ jobs:
           username: robot$kigawa-net
           password: ${{ secrets.HARBOR_PASS }}
 
-      - name: Build and push
+      - name: Build and push frontend
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -54,6 +57,18 @@ jobs:
             harbor.kigawa.net/library/admin-panel:main-${{ github.sha }}
           cache-from: type=registry,ref=harbor.kigawa.net/library/admin-panel:buildcache
           cache-to: type=registry,ref=harbor.kigawa.net/library/admin-panel:buildcache,mode=max
+
+      - name: Build and push api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.server
+          push: true
+          tags: |
+            harbor.kigawa.net/library/admin-panel-api:latest
+            harbor.kigawa.net/library/admin-panel-api:main-${{ github.sha }}
+          cache-from: type=registry,ref=harbor.kigawa.net/library/admin-panel-api:buildcache
+          cache-to: type=registry,ref=harbor.kigawa.net/library/admin-panel-api:buildcache,mode=max
 
       - name: Update manifest image tag
         run: |
