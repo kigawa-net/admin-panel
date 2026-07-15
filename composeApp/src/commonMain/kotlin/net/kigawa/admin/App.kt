@@ -13,12 +13,11 @@ private sealed class AppScreen {
 }
 
 @Composable
-fun App() {
-    val authProvider = remember { KeycloakAuthProvider() }
+fun App(authProvider: KeycloakAuthProvider) {
     var authState by remember { mutableStateOf<AuthState>(AuthState.Unauthenticated) }
     var currentScreen by remember { mutableStateOf<AppScreen>(AppScreen.Dashboard) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(authProvider) {
         authProvider.authState.collect { state ->
             authState = state
         }
@@ -26,17 +25,10 @@ fun App() {
 
     when (val state = authState) {
         is AuthState.Unauthenticated -> {
-            LoginScreen(
-                onLogin = { username, password ->
-                    authProvider.login(username, password)
-                }
-            )
+            LoginScreen(onLogin = { authProvider.login() })
         }
         is AuthState.Loading -> {
-            LoginScreen(
-                isLoading = true,
-                onLogin = { _, _ -> }
-            )
+            LoginScreen(isLoading = true, onLogin = {})
         }
         is AuthState.Authenticated -> {
             when (currentScreen) {
@@ -53,9 +45,7 @@ fun App() {
         is AuthState.Error -> {
             LoginScreen(
                 error = state.message,
-                onLogin = { username, password ->
-                    authProvider.login(username, password)
-                }
+                onLogin = { authProvider.login() }
             )
         }
     }

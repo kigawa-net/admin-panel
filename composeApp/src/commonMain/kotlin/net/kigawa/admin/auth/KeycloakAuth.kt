@@ -2,11 +2,9 @@ package net.kigawa.admin.auth
 
 import io.ktor.client.*
 import io.ktor.client.call.*
-import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.request.forms.*
 import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,7 +13,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 sealed class AuthState {
     object Unauthenticated : AuthState()
@@ -48,61 +45,113 @@ interface KeycloakAuthConfig {
 }
 
 object DefaultKeycloakConfig : KeycloakAuthConfig {
-    override val serverUrl: String = "http://localhost:8080"
-    override val realm: String = "master"
+    override val serverUrl: String = "https://user.kigawa.net"
+    override val realm: String = "manage"
     override val clientId: String = "admin-panel"
 }
 
+private val KeycloakAuthConfig.authUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/auth"
+private val KeycloakAuthConfig.tokenUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/token"
+private val KeycloakAuthConfig.userInfoUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/userinfo"
+
 expect fun createHttpClient(): HttpClient
 
+/** Generates a cryptographically secure random string usable as a PKCE code verifier / OAuth state. */
+expect fun secureRandomString(length: Int): String
+
+/** SHA-256 hashes [input] and returns the result as Base64url (no padding), per RFC 7636. */
+expect fun sha256Base64Url(input: String): String
+
+internal data class PkceRequest(val codeVerifier: String, val state: String, val codeChallenge: String)
+
+private fun generatePkceRequest(): PkceRequest {
+    val codeVerifier = secureRandomString(64)
+    val state = secureRandomString(32)
+    return PkceRequest(codeVerifier, state, sha256Base64Url(codeVerifier))
+}
+
+private fun buildAuthorizationUrl(
+    config: KeycloakAuthConfig,
+    redirectUri: String,
+    pkce: PkceRequest
+): String = URLBuilder(config.authUrl).apply {
+    parameters.append("response_type", "code")
+    parameters.append("client_id", config.clientId)
+    parameters.append("redirect_uri", redirectUri)
+    parameters.append("scope", "openid profile email")
+    parameters.append("state", pkce.state)
+    parameters.append("code_challenge", pkce.codeChallenge)
+    parameters.append("code_challenge_method", "S256")
+}.buildString()
+
+/**
+ * Drives the OIDC Authorization Code + PKCE flow against Keycloak.
+ *
+ * The actual authorization request is opened by [launchAuthorizationUrl] (a system browser on
+ * desktop, a custom-tab/browser Intent on Android), since a native app cannot POST credentials
+ * directly per OIDC best practice. The platform is responsible for capturing the redirect back
+ * to [redirectUri] and forwarding it to [handleAuthorizationResponse].
+ */
 class KeycloakAuthProvider(
-    private val config: KeycloakAuthConfig = DefaultKeycloakConfig
+    private val redirectUri: String,
+    private val config: KeycloakAuthConfig = DefaultKeycloakConfig,
+    private val launchAuthorizationUrl: (String) -> Unit
 ) {
     private val _authState = MutableStateFlow<AuthState>(AuthState.Unauthenticated)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
     private val scope = CoroutineScope(Dispatchers.Default)
-    private var currentToken: String? = null
+    private val httpClient: HttpClient by lazy { createHttpClient() }
 
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
+    private var pendingVerifier: String? = null
+    private var pendingState: String? = null
+
+    fun login() {
+        val pkce = generatePkceRequest()
+        pendingVerifier = pkce.codeVerifier
+        pendingState = pkce.state
+        _authState.value = AuthState.Loading
+        launchAuthorizationUrl(buildAuthorizationUrl(config, redirectUri, pkce))
     }
 
-    private val httpClient: HttpClient by lazy {
-        createHttpClient()
-    }
+    /** Call once the platform has captured the redirect to [redirectUri]. */
+    fun handleAuthorizationResponse(code: String?, state: String?, error: String? = null) {
+        if (error != null) {
+            _authState.value = AuthState.Error(error)
+            return
+        }
+        val expectedState = pendingState
+        val codeVerifier = pendingVerifier
+        pendingState = null
+        pendingVerifier = null
 
-    private val tokenUrl: String
-        get() = "${config.serverUrl}/realms/${config.realm}/protocol/openid-connect/token"
+        if (code == null || state == null || state != expectedState || codeVerifier == null) {
+            _authState.value = AuthState.Error("認証レスポンスが不正です")
+            return
+        }
 
-    private val userInfoUrl: String
-        get() = "${config.serverUrl}/realms/${config.realm}/protocol/openid-connect/userinfo"
-
-    fun login(username: String, password: String) {
         scope.launch {
             _authState.value = AuthState.Loading
             try {
                 val tokenResponse = httpClient.submitForm(
-                    url = tokenUrl,
+                    url = config.tokenUrl,
                     formParameters = parameters {
-                        append("grant_type", "password")
+                        append("grant_type", "authorization_code")
                         append("client_id", config.clientId)
-                        append("username", username)
-                        append("password", password)
+                        append("code", code)
+                        append("redirect_uri", redirectUri)
+                        append("code_verifier", codeVerifier)
                     }
                 ).body<TokenResponse>()
 
-                currentToken = tokenResponse.accessToken
-
-                val userInfo = httpClient.get(userInfoUrl) {
+                val userInfo = httpClient.get(config.userInfoUrl) {
                     bearerAuth(tokenResponse.accessToken)
                 }.body<UserInfoResponse>()
 
                 val displayName = userInfo.name
                     ?: userInfo.preferredUsername
                     ?: userInfo.email
-                    ?: username
+                    ?: "User"
 
                 _authState.value = AuthState.Authenticated(
                     username = displayName,
@@ -117,7 +166,6 @@ class KeycloakAuthProvider(
     }
 
     fun logout() {
-        currentToken = null
         _authState.value = AuthState.Unauthenticated
     }
 }
