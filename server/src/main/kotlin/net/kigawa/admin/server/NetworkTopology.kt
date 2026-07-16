@@ -5,8 +5,6 @@ import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.http.URLBuilder
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 
 @Serializable
@@ -50,39 +48,29 @@ private data class PrometheusInstantResult(
     val value: List<JsonElement> = emptyList()
 )
 
-private val topologyJson = Json { ignoreUnknownKeys = true }
-
 /**
- * 機器の識別情報(名前・種別・IP・レイアウト座標)は実データを含むため、このパブリック
- * リポジトリにはコミットしない。稼働中クラスタのSecret経由で環境変数 NETWORK_TOPOLOGY_JSON
- * にJSONとして注入し、ここで配信する。未設定・解析失敗時は非センシティブな汎用トポロジーへ
- * フォールバックする。
+ * 機器一覧・接続線のどちらもSecretを使わず、稼働中クラスタから直接収集する。
  *
- * 接続線(connections)は shumoku と同じ考え方で、conntrack-exporter が収集し Prometheus に
- * 集約された実際の通信ペア(conntrack_bytes_per_second{src,dst})から動的に構築する。実際に
- * 通信が観測された機器同士だけを結ぶため、静的に書いたことがない・想定していないリンクも
- * 反映される。Prometheusから取得できない場合のみ、Secret側に static に書かれた connections
- * (それも無ければ汎用フォールバック)を使う。
+ * - 機器一覧: Podに自動マウントされるServiceAccount経由でKubernetes APIを直接呼び、
+ *   実際のノード名・内部IP・役割(コントロールプレーン/ワーカー)をその場で取得する
+ *   ([discoverKubernetesNodes])。in-cluster で実行されていない、またはRBAC未設定などで
+ *   取得できない場合のみ、非センシティブな汎用トポロジーへフォールバックする。
+ * - 接続線: shumoku と同じ考え方で、conntrack-exporter が収集し Prometheus に集約された
+ *   実際の通信ペア(conntrack_bytes_per_second{src,dst})から動的に構築する。実際に通信が
+ *   観測された機器同士だけを結ぶため、想定していなかったリンクも反映されうる。
+ *   Prometheusから取得できない場合のみ、汎用フォールバックの静的connectionsを使う。
  */
 suspend fun loadNetworkTopology(client: HttpClient): NetworkTopologyDto {
-    val staticTopology = loadStaticTopology()
-    val liveConnections = queryConntrackConnections(client, staticTopology.devices)
+    val discoveredDevices = discoverKubernetesNodes()
+    val fallback = genericNetworkTopology()
+    val devices = discoveredDevices.ifEmpty { fallback.devices }
 
-    return staticTopology.copy(
-        connections = liveConnections.ifEmpty { staticTopology.connections }
-    )
-}
-
-private fun loadStaticTopology(): NetworkTopologyDto {
-    val raw = System.getenv("NETWORK_TOPOLOGY_JSON")
-    if (raw != null) {
-        try {
-            return topologyJson.decodeFromString<NetworkTopologyDto>(raw)
-        } catch (e: Exception) {
-            // fall through to the generic topology below
-        }
+    val liveConnections = queryConntrackConnections(client, devices)
+    val connections = liveConnections.ifEmpty {
+        if (discoveredDevices.isEmpty()) fallback.connections else emptyList()
     }
-    return genericNetworkTopology()
+
+    return NetworkTopologyDto(devices = devices, connections = connections)
 }
 
 private suspend fun queryConntrackConnections(

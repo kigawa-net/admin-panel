@@ -14,20 +14,13 @@ spec:
       labels:
         app: admin-panel-api
     spec:
+      serviceAccountName: admin-panel-api
       containers:
         - name: admin-panel-api
           image: harbor.kigawa.net/library/admin-panel-api:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
-          envFrom:
-            # 実機器名・IPアドレスを含むトポロジーはこのリポジトリにはコミットしない。
-            # クラスタ側で `kubectl create secret generic admin-panel-network-topology
-            # --from-literal=NETWORK_TOPOLOGY_JSON=...` として別途投入する。未作成でも
-            # optional のため起動は失敗せず、サーバー側の汎用フォールバックが使われる。
-            - secretRef:
-                name: admin-panel-network-topology
-                optional: true
           resources:
             requests:
               cpu: 50m

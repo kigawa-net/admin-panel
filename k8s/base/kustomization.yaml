@@ -6,4 +6,5 @@ resources:
   - service.yaml
   - api-deployment.yaml
   - api-service.yaml
+  - api-rbac.yaml
   - ingress.yaml
