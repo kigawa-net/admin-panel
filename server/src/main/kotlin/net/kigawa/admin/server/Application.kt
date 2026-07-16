@@ -31,7 +31,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 
 /** Internal cluster DNS for the kube-prometheus-stack Prometheus service (see kigawa01/k8s-system). */
-private val prometheusUrl =
+internal val prometheusUrl =
     System.getenv("PROMETHEUS_URL") ?: "http://prometheus-operated.prometheus.svc.cluster.local:9090"
 
 private val keycloakUserInfoUrl = System.getenv("KEYCLOAK_USERINFO_URL")
@@ -107,7 +107,7 @@ fun Application.module() {
                 return@get
             }
 
-            call.respond(loadNetworkTopology())
+            call.respond(loadNetworkTopology(httpClient))
         }
     }
 }
