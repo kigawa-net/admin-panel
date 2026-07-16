@@ -1,6 +1,7 @@
 package net.kigawa.admin.pages
 
 import androidx.compose.runtime.*
+import com.varabyte.kobweb.compose.css.Cursor
 import com.varabyte.kobweb.compose.css.FontSize
 import com.varabyte.kobweb.compose.css.FontWeight
 import com.varabyte.kobweb.compose.foundation.layout.Arrangement
@@ -18,8 +19,14 @@ import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
+import net.kigawa.admin.networkmap.NetworkMapPage
 import net.kigawa.admin.util.URLSearchParams
 import org.jetbrains.compose.web.css.*
+
+private sealed class AppScreen {
+    object Dashboard : AppScreen()
+    object NetworkMap : AppScreen()
+}
 
 @Page
 @Composable
@@ -27,6 +34,7 @@ fun HomePage() {
     val authProvider = remember { KeycloakAuthProvider() }
     val authState by authProvider.authState.collectAsState()
     val scope = rememberCoroutineScope()
+    var currentScreen by remember { mutableStateOf<AppScreen>(AppScreen.Dashboard) }
 
     val urlError = remember {
         URLSearchParams(window.location.search).get("error")
@@ -51,10 +59,17 @@ fun HomePage() {
         ) {
             LoginPage(isLoading = true, onLogin = {})
         }
-        is AuthState.Authenticated -> DashboardPage(
-            username = state.username,
-            onLogout = { authProvider.logout() }
-        )
+        is AuthState.Authenticated -> when (currentScreen) {
+            AppScreen.Dashboard -> DashboardPage(
+                username = state.username,
+                onLogout = { authProvider.logout() },
+                onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap }
+            )
+            AppScreen.NetworkMap -> NetworkMapPage(
+                accessToken = state.accessToken,
+                onBack = { currentScreen = AppScreen.Dashboard }
+            )
+        }
         is AuthState.Error -> Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
@@ -126,7 +141,8 @@ private fun LoginPage(
 @Composable
 private fun DashboardPage(
     username: String,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onOpenNetworkMap: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -179,6 +195,26 @@ private fun DashboardPage(
                 StatCard("Users", "0")
                 StatCard("Sessions", "1")
                 StatCard("Roles", "0")
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.px)
+                    .backgroundColor(Colors.White)
+                    .borderRadius(8.px)
+                    .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
+                    .onClick { onOpenNetworkMap() }
+                    .cursor(Cursor.Pointer)
+            ) {
+                SpanText(
+                    "ネットワークマップ",
+                    modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
+                )
+                SpanText(
+                    "kigawa-net の機器構成を図で確認する",
+                    modifier = Modifier.color(Colors.Gray)
+                )
             }
         }
     }

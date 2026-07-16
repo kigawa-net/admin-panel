@@ -21,3 +21,8 @@ local.properties
 # Next.js (removed)
 /.next/
 /node_modules/
+
+# Kobweb (site/)
+/site/.kobweb/site/
+/site/.kobweb/server/
+/site/kotlin-js-store/
