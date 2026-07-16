@@ -15,6 +15,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,22 +31,35 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.hypot
+import net.kigawa.admin.auth.createHttpClient
 
+// Fixed categorical order (dataviz palette slots) — never reassigned per device identity.
 private fun colorForType(type: DeviceType): Color = when (type) {
-    DeviceType.INTERNET -> Color(0xFF607D8B)
-    DeviceType.ROUTER -> Color(0xFF1E88E5)
-    DeviceType.SERVER -> Color(0xFF43A047)
-    DeviceType.PC -> Color(0xFFFB8C00)
+    DeviceType.INTERNET -> Color(0xFF607D8B) // neutral: outside the LAN, not a categorical entity
+    DeviceType.ROUTER -> Color(0xFF2A78D6) // slot 1: blue
+    DeviceType.CONTROL_PLANE -> Color(0xFF008300) // slot 2: green
+    DeviceType.PC -> Color(0xFFE87BA4) // slot 3: magenta
+    DeviceType.WORKER -> Color(0xFF1BAF7A) // slot 5: aqua
+    DeviceType.GATEWAY -> Color(0xFFEB6834) // slot 6: orange
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-actual fun NetworkMapScreen(onBack: () -> Unit) {
+actual fun NetworkMapScreen(accessToken: String, onBack: () -> Unit) {
     var selectedDevice by remember { mutableStateOf<NetworkDevice?>(null) }
     var pan by remember { mutableStateOf(Offset.Zero) }
-    val topology = remember { kigawaNetTopology() }
+    var topology by remember { mutableStateOf(fallbackNetworkTopology()) }
+    val httpClient = remember { createHttpClient() }
     val textMeasurer = rememberTextMeasurer()
-    val nodeRadiusPx = with(androidx.compose.ui.platform.LocalDensity.current) { 36.dp.toPx() }
+    val nodeRadiusPx = with(androidx.compose.ui.platform.LocalDensity.current) { 26.dp.toPx() }
+
+    LaunchedEffect(accessToken) {
+        topology = try {
+            fetchNetworkTopology(httpClient, accessToken)
+        } catch (e: Exception) {
+            fallbackNetworkTopology()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -115,10 +129,10 @@ actual fun NetworkMapScreen(onBack: () -> Unit) {
                             style = Stroke(width = 6f)
                         )
                     }
-                    val layout = textMeasurer.measure(device.name, style = TextStyle(fontSize = 14.sp))
+                    val layout = textMeasurer.measure(device.name, style = TextStyle(fontSize = 11.sp))
                     drawText(
                         textLayoutResult = layout,
-                        topLeft = Offset(c.x - layout.size.width / 2, c.y + nodeRadiusPx + 12f)
+                        topLeft = Offset(c.x - layout.size.width / 2, c.y + nodeRadiusPx + 8f)
                     )
                 }
             }

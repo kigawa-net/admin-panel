@@ -99,6 +99,16 @@ fun Application.module() {
             val rangeMinutes = call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(5, 1440) ?: 60
             call.respond(queryTraffic(httpClient, rangeMinutes))
         }
+
+        get("/api/network-topology") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+
+            call.respond(loadNetworkTopology())
+        }
     }
 }
 

@@ -41,6 +41,7 @@ fun App(authProvider: KeycloakAuthProvider) {
                     onOpenTraffic = { currentScreen = AppScreen.Traffic }
                 )
                 AppScreen.NetworkMap -> NetworkMapScreen(
+                    accessToken = state.accessToken,
                     onBack = { currentScreen = AppScreen.Dashboard }
                 )
                 AppScreen.Traffic -> TrafficScreen(
