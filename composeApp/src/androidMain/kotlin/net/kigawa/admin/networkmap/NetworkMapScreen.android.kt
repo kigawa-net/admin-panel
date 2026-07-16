@@ -12,18 +12,29 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import net.kigawa.admin.auth.createHttpClient
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-actual fun NetworkMapScreen(onBack: () -> Unit) {
+actual fun NetworkMapScreen(accessToken: String, onBack: () -> Unit) {
     var selectedDevice by remember { mutableStateOf<NetworkDevice?>(null) }
-    val topology = remember { kigawaNetTopology() }
+    var topology by remember { mutableStateOf(fallbackNetworkTopology()) }
+    val httpClient = remember { createHttpClient() }
+
+    LaunchedEffect(accessToken) {
+        topology = try {
+            fetchNetworkTopology(httpClient, accessToken)
+        } catch (e: Exception) {
+            fallbackNetworkTopology()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -47,6 +58,9 @@ actual fun NetworkMapScreen(onBack: () -> Unit) {
                         this.topology = topology
                         onDeviceSelected = { device -> selectedDevice = device }
                     }
+                },
+                update = { view ->
+                    view.topology = topology
                 }
             )
             DeviceInfoPanel(device = selectedDevice)

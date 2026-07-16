@@ -14,6 +14,7 @@ spec:
       labels:
         app: admin-panel-api
     spec:
+      serviceAccountName: admin-panel-api
       containers:
         - name: admin-panel-api
           image: harbor.kigawa.net/library/admin-panel-api:latest

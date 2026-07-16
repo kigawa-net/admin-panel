@@ -10,11 +10,14 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import kotlin.math.hypot
 
+// Fixed categorical order (dataviz palette slots) — never reassigned per device identity.
 private fun colorForType(type: DeviceType): Int = when (type) {
-    DeviceType.INTERNET -> Color.rgb(0x60, 0x7D, 0x8B)
-    DeviceType.ROUTER -> Color.rgb(0x1E, 0x88, 0xE5)
-    DeviceType.SERVER -> Color.rgb(0x43, 0xA0, 0x47)
-    DeviceType.PC -> Color.rgb(0xFB, 0x8C, 0x00)
+    DeviceType.INTERNET -> Color.rgb(0x60, 0x7D, 0x8B) // neutral: outside the LAN, not a categorical entity
+    DeviceType.ROUTER -> Color.rgb(0x2A, 0x78, 0xD6) // slot 1: blue
+    DeviceType.CONTROL_PLANE -> Color.rgb(0x00, 0x83, 0x00) // slot 2: green
+    DeviceType.PC -> Color.rgb(0xE8, 0x7B, 0xA4) // slot 3: magenta
+    DeviceType.WORKER -> Color.rgb(0x1B, 0xAF, 0x7A) // slot 5: aqua
+    DeviceType.GATEWAY -> Color.rgb(0xEB, 0x68, 0x34) // slot 6: orange
 }
 
 class NetworkMapSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
@@ -28,7 +31,7 @@ class NetworkMapSurfaceView(context: Context) : SurfaceView(context), SurfaceHol
     var onDeviceSelected: (NetworkDevice?) -> Unit = {}
 
     private val density = context.resources.displayMetrics.density
-    private val nodeRadiusPx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 36f, context.resources.displayMetrics)
+    private val nodeRadiusPx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, context.resources.displayMetrics)
     private val touchSlopPx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8f, context.resources.displayMetrics)
 
     private var panX = 0f
@@ -59,7 +62,7 @@ class NetworkMapSurfaceView(context: Context) : SurfaceView(context), SurfaceHol
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         textAlign = Paint.Align.CENTER
-        textSize = 14f * density
+        textSize = 11f * density
     }
     private val backgroundColor = Color.rgb(0xFA, 0xFA, 0xFA)
 
@@ -108,7 +111,7 @@ class NetworkMapSurfaceView(context: Context) : SurfaceView(context), SurfaceHol
                 if (device.id == selectedId) {
                     canvas.drawCircle(cx, cy, nodeRadiusPx + 6f * density, selectedStrokePaint)
                 }
-                canvas.drawText(device.name, cx, cy + nodeRadiusPx + 24f * density, labelPaint)
+                canvas.drawText(device.name, cx, cy + nodeRadiusPx + 14f * density, labelPaint)
             }
 
             canvas.restore()
