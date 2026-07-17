@@ -8,3 +8,4 @@ resources:
   - api-service.yaml
   - api-rbac.yaml
   - ingress.yaml
+  - github-app-bws.yaml
