@@ -29,7 +29,7 @@ spec:
             - name: KEYCLOAK_ADMIN_USERINFO_URL
               value: "https://user.kigawa.net/realms/manage/protocol/openid-connect/userinfo"
             - name: KEYCLOAK_PUBLIC_USERINFO_URL
-              value: "https://user.kigawa.net/realms/public/protocol/openid-connect/userinfo"
+              value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
           resources:
             requests:
               cpu: 50m

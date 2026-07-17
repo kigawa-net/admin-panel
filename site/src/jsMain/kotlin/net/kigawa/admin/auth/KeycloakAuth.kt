@@ -29,7 +29,7 @@ import kotlin.js.Promise
  */
 enum class KeycloakRealm(val realmName: String, val label: String) {
     ADMIN("manage", "管理者"),
-    PUBLIC("public", "一般利用者")
+    PUBLIC("kigawa-net", "一般利用者")
 }
 
 sealed class AuthState {

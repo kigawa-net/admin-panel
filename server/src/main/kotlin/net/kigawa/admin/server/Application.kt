@@ -45,7 +45,7 @@ private val adminRealmUserInfoUrl = System.getenv("KEYCLOAK_ADMIN_USERINFO_URL")
     ?: "https://user.kigawa.net/realms/manage/protocol/openid-connect/userinfo"
 
 private val publicRealmUserInfoUrl = System.getenv("KEYCLOAK_PUBLIC_USERINFO_URL")
-    ?: "https://user.kigawa.net/realms/public/protocol/openid-connect/userinfo"
+    ?: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
 
 @Serializable
 data class TrafficPoint(
