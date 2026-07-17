@@ -32,6 +32,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import java.security.MessageDigest
 
 /** Internal cluster DNS for the kube-prometheus-stack Prometheus service (see kigawa01/k8s-system). */
 internal val prometheusUrl =
@@ -47,6 +48,16 @@ private val adminRealmUserInfoUrl = System.getenv("KEYCLOAK_ADMIN_USERINFO_URL")
 
 private val publicRealmUserInfoUrl = System.getenv("KEYCLOAK_PUBLIC_USERINFO_URL")
     ?: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
+
+/**
+ * Shared secret for the CI-facing GitHub App token endpoint (custom action -> admin-panel -> App).
+ * Kept separate from Keycloak auth since CI workflows have no interactive user session; this is the
+ * only credential CI needs, so the App's actual private key never has to leave admin-panel.
+ */
+private val githubAppCiToken = System.getenv("GITHUB_APP_CI_TOKEN")
+
+private fun constantTimeEquals(a: String, b: String): Boolean =
+    MessageDigest.isEqual(a.toByteArray(), b.toByteArray())
 
 @Serializable
 data class TrafficPoint(
@@ -252,6 +263,34 @@ fun Application.module() {
                 GithubApp.createInstallationToken(
                     httpClient,
                     installationId,
+                    repositories = request.repositories,
+                    permissions = request.permissions
+                )
+            )
+        }
+
+        // CI-facing broker: custom action -> admin-panel -> GitHub App. Authenticated with a
+        // shared secret (not Keycloak, since workflows have no interactive user session) so the
+        // App's private key only ever lives on this server, never in a GitHub Actions secret.
+        post("/api/github-app/ci-token") {
+            val presented = call.request.header("X-CI-Token")
+            if (githubAppCiToken.isNullOrBlank() || presented.isNullOrBlank() ||
+                !constantTimeEquals(presented, githubAppCiToken)
+            ) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing CI token"))
+                return@post
+            }
+            if (!GithubApp.isConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
+                return@post
+            }
+            val request = call.receive<GithubCiTokenRequest>()
+            val owner = request.owner ?: "kigawa-net"
+            val installation = GithubApp.getOrgInstallation(httpClient, owner)
+            call.respond(
+                GithubApp.createInstallationToken(
+                    httpClient,
+                    installation.id,
                     repositories = request.repositories,
                     permissions = request.permissions
                 )

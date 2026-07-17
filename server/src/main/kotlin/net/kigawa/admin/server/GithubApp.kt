@@ -46,6 +46,14 @@ data class GithubInstallationTokenRequest(
     @SerialName("permissions") val permissions: Map<String, String>? = null
 )
 
+/** Request body for the CI-facing token endpoint, which resolves the installation by org/user instead of id. */
+@Serializable
+data class GithubCiTokenRequest(
+    @SerialName("owner") val owner: String? = null,
+    @SerialName("repositories") val repositories: List<String>? = null,
+    @SerialName("permissions") val permissions: Map<String, String>? = null
+)
+
 @Serializable
 data class GithubRepository(
     @SerialName("full_name") val fullName: String
@@ -68,6 +76,14 @@ object GithubApp {
     suspend fun listInstallations(client: HttpClient): List<GithubInstallation> {
         val jwt = buildAppJwt(githubAppId, requireNotNull(githubAppPrivateKeyPem))
         return client.get("https://api.github.com/app/installations") {
+            applyAppAuthHeaders(jwt)
+        }.body()
+    }
+
+    /** Looks up the App's installation on a given org/user, for CI callers that don't know the installation id. */
+    suspend fun getOrgInstallation(client: HttpClient, owner: String): GithubInstallation {
+        val jwt = buildAppJwt(githubAppId, requireNotNull(githubAppPrivateKeyPem))
+        return client.get("https://api.github.com/orgs/$owner/installation") {
             applyAppAuthHeaders(jwt)
         }.body()
     }

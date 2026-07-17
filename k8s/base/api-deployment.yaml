@@ -41,6 +41,15 @@ spec:
                   name: admin-panel-github-app
                   key: private-key
                   optional: true
+            # CI(カスタムアクション経由)がGitHub Appの秘密鍵を直接扱わずに済むよう、
+            # ここで発行を仲介するための共有シークレット。GitHub Actions側では
+            # 同じ値を ADMIN_PANEL_CI_TOKEN として登録する(kigawa-net/kinfra#348)。
+            - name: GITHUB_APP_CI_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-github-app
+                  key: ci-token
+                  optional: true
           resources:
             requests:
               cpu: 50m
