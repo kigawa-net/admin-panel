@@ -168,11 +168,12 @@ suspend fun addOrganizationMember(client: HttpClient, orgId: String, userId: Str
     val token = orgServiceAccountToken(client)
         ?: return ActionResultDto(false, "組織管理APIのサービスアカウントが未設定です")
     return try {
-        // Keycloak Admin REST APIのこのエンドポイントはJSONではなくtext/plainでユーザーIDを渡す。
+        // Keycloak Admin REST APIのこのエンドポイントはapplication/jsonでユーザーIDを
+        // JSON文字列リテラルとして渡す(実機検証済み。text/plainだと415になる)。
         val response: HttpResponse = client.post("$keycloakServerUrl/admin/realms/$ORG_REALM/organizations/$orgId/members") {
             header(HttpHeaders.Authorization, "Bearer $token")
-            contentType(ContentType.Text.Plain)
-            setBody(userId)
+            contentType(ContentType.Application.Json)
+            setBody(jsonStringLiteral(userId))
         }
         if (response.status.value in 200..299) {
             ActionResultDto(true, "メンバーを追加しました")
