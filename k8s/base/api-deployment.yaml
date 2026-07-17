@@ -30,6 +30,17 @@ spec:
               value: "https://user.kigawa.net/realms/manage/protocol/openid-connect/userinfo"
             - name: KEYCLOAK_PUBLIC_USERINFO_URL
               value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
+            # kigawa-net GitHub App (app_id 4316503) を操作してインストールトークンを
+            # 発行するための鍵。admin-panel-github-app シークレットは事前に別途作成が必要
+            # (kinfra/Bitwarden経由、またはkubectl create secretで private-key キーを投入)。
+            - name: GITHUB_APP_ID
+              value: "4316503"
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-github-app
+                  key: private-key
+                  optional: true
           resources:
             requests:
               cpu: 50m

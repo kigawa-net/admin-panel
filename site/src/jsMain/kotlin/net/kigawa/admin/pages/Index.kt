@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.auth.KeycloakRealm
+import net.kigawa.admin.githubapp.GithubAppPage
 import net.kigawa.admin.networkmap.NetworkMapPage
 import net.kigawa.admin.servers.ServerStatusPage
 import net.kigawa.admin.util.URLSearchParams
@@ -29,6 +30,7 @@ private sealed class AppScreen {
     object Dashboard : AppScreen()
     object NetworkMap : AppScreen()
     object Servers : AppScreen()
+    object GithubApp : AppScreen()
 }
 
 @Page
@@ -70,7 +72,8 @@ fun HomePage() {
                     isAdmin = isAdmin,
                     onLogout = { authProvider.logout() },
                     onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
-                    onOpenServers = { currentScreen = AppScreen.Servers }
+                    onOpenServers = { currentScreen = AppScreen.Servers },
+                    onOpenGithubApp = { currentScreen = AppScreen.GithubApp }
                 )
                 AppScreen.NetworkMap -> NetworkMapPage(
                     accessToken = state.accessToken,
@@ -78,6 +81,14 @@ fun HomePage() {
                 )
                 AppScreen.Servers -> if (isAdmin) {
                     ServerStatusPage(
+                        accessToken = state.accessToken,
+                        onBack = { currentScreen = AppScreen.Dashboard }
+                    )
+                } else {
+                    currentScreen = AppScreen.Dashboard
+                }
+                AppScreen.GithubApp -> if (isAdmin) {
+                    GithubAppPage(
                         accessToken = state.accessToken,
                         onBack = { currentScreen = AppScreen.Dashboard }
                     )
@@ -168,7 +179,8 @@ private fun DashboardPage(
     isAdmin: Boolean,
     onLogout: () -> Unit,
     onOpenNetworkMap: () -> Unit,
-    onOpenServers: () -> Unit
+    onOpenServers: () -> Unit,
+    onOpenGithubApp: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -260,6 +272,26 @@ private fun DashboardPage(
                     )
                     SpanText(
                         "各ノードの稼働状態を確認・操作する",
+                        modifier = Modifier.color(Colors.Gray)
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.px)
+                        .backgroundColor(Colors.White)
+                        .borderRadius(8.px)
+                        .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
+                        .onClick { onOpenGithubApp() }
+                        .cursor(Cursor.Pointer)
+                ) {
+                    SpanText(
+                        "GitHub App",
+                        modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
+                    )
+                    SpanText(
+                        "kigawa-net GitHub Appのインストールトークンを発行する",
                         modifier = Modifier.color(Colors.Gray)
                     )
                 }

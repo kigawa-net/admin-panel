@@ -18,6 +18,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.header
+import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
@@ -213,6 +214,48 @@ fun Application.module() {
                 return@delete
             }
             call.respond(deletePod(namespace, name))
+        }
+
+        // GitHub App (kigawa-net, app_id 4316503) operation: mint scoped installation tokens
+        // in place of the long-lived org PAT. Admin-only, since a minted token can act with up
+        // to the App's full contents:write permission.
+        get("/api/github-app/installations") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            if (!GithubApp.isConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
+                return@get
+            }
+            call.respond(GithubApp.listInstallations(httpClient))
+        }
+
+        post("/api/github-app/installations/{id}/token") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            if (!GithubApp.isConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
+                return@post
+            }
+            val installationId = call.parameters["id"]?.toLongOrNull()
+            if (installationId == null) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid installation id"))
+                return@post
+            }
+            val request = call.receive<GithubInstallationTokenRequest>()
+            call.respond(
+                GithubApp.createInstallationToken(
+                    httpClient,
+                    installationId,
+                    repositories = request.repositories,
+                    permissions = request.permissions
+                )
+            )
         }
     }
 }
