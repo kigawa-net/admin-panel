@@ -15,7 +15,7 @@ jobs:
         id: app-token
         uses: kigawa-net/kinfra/.github/actions/kigawa-net-app-token@main
         with:
-          private-key: ${{ secrets.KIGAWA_NET_APP_PRIVATE_KEY }}
+          ci-token: ${{ secrets.ADMIN_PANEL_CI_TOKEN }}
 
       - name: Checkout
         uses: actions/checkout@v4
