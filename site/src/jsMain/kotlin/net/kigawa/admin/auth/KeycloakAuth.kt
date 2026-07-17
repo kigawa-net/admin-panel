@@ -22,10 +22,20 @@ import org.w3c.dom.get
 import org.w3c.dom.set
 import kotlin.js.Promise
 
+/**
+ * 管理用realm(全機能。サーバー管理の閲覧・操作を含む)とpublic用realm(閲覧専用。
+ * ダッシュボード・ネットワークマップ・トラフィックのみ)の2つを切り替えてログインできる。
+ * どちらのrealmで認証したかはバックエンド側でも独立に検証される。
+ */
+enum class KeycloakRealm(val realmName: String, val label: String) {
+    ADMIN("manage", "管理者"),
+    PUBLIC("public", "一般利用者")
+}
+
 sealed class AuthState {
     object Unauthenticated : AuthState()
     object Loading : AuthState()
-    data class Authenticated(val username: String, val accessToken: String) : AuthState()
+    data class Authenticated(val username: String, val accessToken: String, val realm: KeycloakRealm) : AuthState()
     data class Error(val message: String) : AuthState()
 }
 
@@ -48,17 +58,17 @@ data class UserInfoResponse(
 
 object KeycloakConfig {
     val serverUrl: String = js("window.__KEYCLOAK_URL__ || 'https://user.kigawa.net'") as String
-    val realm: String = js("window.__KEYCLOAK_REALM__ || 'manage'") as String
     val clientId: String = js("window.__KEYCLOAK_CLIENT_ID__ || 'admin-panel'") as String
 
-    val authUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/auth"
-    val tokenUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/token"
-    val userInfoUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/userinfo"
-    val logoutUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/logout"
+    fun authUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/auth"
+    fun tokenUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/token"
+    fun userInfoUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/userinfo"
+    fun logoutUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/logout"
 }
 
 private const val KEY_CODE_VERIFIER = "kc_code_verifier"
 private const val KEY_STATE = "kc_state"
+private const val KEY_REALM = "kc_realm"
 private const val KEY_ACCESS_TOKEN = "kc_access_token"
 private const val KEY_USERNAME = "kc_username"
 
@@ -106,18 +116,20 @@ class KeycloakAuthProvider : AutoCloseable {
     fun init() {
         val token = localStorage[KEY_ACCESS_TOKEN]
         val username = localStorage[KEY_USERNAME]
-        if (token != null && username != null) {
-            _authState.value = AuthState.Authenticated(username = username, accessToken = token)
+        val realm = localStorage[KEY_REALM]?.let { name -> KeycloakRealm.entries.find { it.realmName == name } }
+        if (token != null && username != null && realm != null) {
+            _authState.value = AuthState.Authenticated(username = username, accessToken = token, realm = realm)
         }
     }
 
-    suspend fun startLogin() {
+    suspend fun startLogin(realm: KeycloakRealm) {
         val codeVerifier = generateRandom(128)
         val state = generateRandom(32)
         val codeChallenge = sha256Base64Url(codeVerifier)
 
         localStorage[KEY_CODE_VERIFIER] = codeVerifier
         localStorage[KEY_STATE] = state
+        localStorage[KEY_REALM] = realm.realmName
 
         val redirectUri = "${window.location.origin}/callback"
         val params = URLSearchParams()
@@ -129,7 +141,7 @@ class KeycloakAuthProvider : AutoCloseable {
         params.set("code_challenge", codeChallenge)
         params.set("code_challenge_method", "S256")
 
-        window.location.href = "${KeycloakConfig.authUrl}?$params"
+        window.location.href = "${KeycloakConfig.authUrl(realm)}?$params"
     }
 
     suspend fun handleCallback(code: String, state: String) {
@@ -142,7 +154,8 @@ class KeycloakAuthProvider : AutoCloseable {
         }
 
         val codeVerifier = localStorage[KEY_CODE_VERIFIER]
-        if (codeVerifier == null) {
+        val realm = localStorage[KEY_REALM]?.let { name -> KeycloakRealm.entries.find { it.realmName == name } }
+        if (codeVerifier == null || realm == null) {
             _authState.value = AuthState.Error("Missing code verifier")
             return
         }
@@ -153,7 +166,7 @@ class KeycloakAuthProvider : AutoCloseable {
         try {
             val redirectUri = "${window.location.origin}/callback"
             val tokenResponse = httpClient.submitForm(
-                url = KeycloakConfig.tokenUrl,
+                url = KeycloakConfig.tokenUrl(realm),
                 formParameters = parameters {
                     append("grant_type", "authorization_code")
                     append("client_id", KeycloakConfig.clientId)
@@ -163,7 +176,7 @@ class KeycloakAuthProvider : AutoCloseable {
                 }
             ).body<TokenResponse>()
 
-            val userInfo = httpClient.get(KeycloakConfig.userInfoUrl) {
+            val userInfo = httpClient.get(KeycloakConfig.userInfoUrl(realm)) {
                 bearerAuth(tokenResponse.accessToken)
             }.body<UserInfoResponse>()
 
@@ -177,7 +190,8 @@ class KeycloakAuthProvider : AutoCloseable {
 
             _authState.value = AuthState.Authenticated(
                 username = displayName,
-                accessToken = tokenResponse.accessToken
+                accessToken = tokenResponse.accessToken,
+                realm = realm
             )
 
             window.location.href = "/"
@@ -188,8 +202,11 @@ class KeycloakAuthProvider : AutoCloseable {
 
     fun logout() {
         val token = localStorage[KEY_ACCESS_TOKEN]
+        val realm = localStorage[KEY_REALM]?.let { name -> KeycloakRealm.entries.find { it.realmName == name } }
+            ?: KeycloakRealm.ADMIN
         localStorage.removeItem(KEY_ACCESS_TOKEN)
         localStorage.removeItem(KEY_USERNAME)
+        localStorage.removeItem(KEY_REALM)
         _authState.value = AuthState.Unauthenticated
 
         val params = URLSearchParams()
@@ -197,11 +214,10 @@ class KeycloakAuthProvider : AutoCloseable {
         params.set("post_logout_redirect_uri", window.location.origin)
         if (token != null) params.set("id_token_hint", token)
 
-        window.location.href = "${KeycloakConfig.logoutUrl}?$params"
+        window.location.href = "${KeycloakConfig.logoutUrl(realm)}?$params"
     }
 
     override fun close() {
         httpClient.close()
     }
 }
-
