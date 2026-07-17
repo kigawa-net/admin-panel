@@ -45,7 +45,8 @@ data class TokenResponse(
     @SerialName("token_type") val tokenType: String,
     @SerialName("expires_in") val expiresIn: Int,
     @SerialName("refresh_token") val refreshToken: String? = null,
-    @SerialName("scope") val scope: String? = null
+    @SerialName("scope") val scope: String? = null,
+    @SerialName("id_token") val idToken: String? = null
 )
 
 @Serializable
@@ -70,6 +71,7 @@ private const val KEY_CODE_VERIFIER = "kc_code_verifier"
 private const val KEY_STATE = "kc_state"
 private const val KEY_REALM = "kc_realm"
 private const val KEY_ACCESS_TOKEN = "kc_access_token"
+private const val KEY_ID_TOKEN = "kc_id_token"
 private const val KEY_USERNAME = "kc_username"
 
 private fun generateRandom(length: Int): String {
@@ -187,6 +189,11 @@ class KeycloakAuthProvider : AutoCloseable {
 
             localStorage[KEY_ACCESS_TOKEN] = tokenResponse.accessToken
             localStorage[KEY_USERNAME] = displayName
+            if (tokenResponse.idToken != null) {
+                localStorage[KEY_ID_TOKEN] = tokenResponse.idToken
+            } else {
+                localStorage.removeItem(KEY_ID_TOKEN)
+            }
 
             _authState.value = AuthState.Authenticated(
                 username = displayName,
@@ -201,10 +208,11 @@ class KeycloakAuthProvider : AutoCloseable {
     }
 
     fun logout() {
-        val token = localStorage[KEY_ACCESS_TOKEN]
+        val idToken = localStorage[KEY_ID_TOKEN]
         val realm = localStorage[KEY_REALM]?.let { name -> KeycloakRealm.entries.find { it.realmName == name } }
             ?: KeycloakRealm.ADMIN
         localStorage.removeItem(KEY_ACCESS_TOKEN)
+        localStorage.removeItem(KEY_ID_TOKEN)
         localStorage.removeItem(KEY_USERNAME)
         localStorage.removeItem(KEY_REALM)
         _authState.value = AuthState.Unauthenticated
@@ -212,7 +220,7 @@ class KeycloakAuthProvider : AutoCloseable {
         val params = URLSearchParams()
         params.set("client_id", KeycloakConfig.clientId)
         params.set("post_logout_redirect_uri", window.location.origin)
-        if (token != null) params.set("id_token_hint", token)
+        if (idToken != null) params.set("id_token_hint", idToken)
 
         window.location.href = "${KeycloakConfig.logoutUrl(realm)}?$params"
     }
