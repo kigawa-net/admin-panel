@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import com.varabyte.kobweb.compose.css.FontSize
 import com.varabyte.kobweb.compose.css.FontWeight
@@ -21,6 +22,8 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.js.Js
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.browser.window
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.jetbrains.compose.web.css.Color
 import org.jetbrains.compose.web.css.px
@@ -35,6 +38,8 @@ private sealed class ServerStatusUiState {
 @Composable
 fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<ServerStatusUiState>(ServerStatusUiState.Loading) }
+    var refreshKey by remember { mutableStateOf(0) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
     val httpClient = remember {
         HttpClient(Js) {
             install(ContentNegotiation) {
@@ -42,12 +47,25 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
             }
         }
     }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(accessToken) {
+    LaunchedEffect(accessToken, refreshKey) {
         state = try {
             ServerStatusUiState.Loaded(fetchServerStatuses(httpClient, accessToken).servers)
         } catch (e: Exception) {
             ServerStatusUiState.Error("サーバー状態を取得できませんでした")
+        }
+    }
+
+    fun runAction(action: suspend () -> ActionResult) {
+        scope.launch {
+            val result = try {
+                action()
+            } catch (e: Exception) {
+                ActionResult(false, e.message ?: "失敗しました")
+            }
+            statusMessage = result.message
+            refreshKey++
         }
     }
 
@@ -78,11 +96,51 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
             modifier = Modifier.fillMaxSize().padding(24.px),
             verticalArrangement = Arrangement.spacedBy(16.px)
         ) {
+            statusMessage?.let { message ->
+                SpanText(message, modifier = Modifier.color(Colors.Blue))
+            }
+
             when (val current = state) {
                 is ServerStatusUiState.Loading -> SpanText("読み込み中...")
                 is ServerStatusUiState.Error -> SpanText(current.message, modifier = Modifier.color(Colors.Red))
                 is ServerStatusUiState.Loaded -> current.servers.forEach { server ->
-                    ServerCard(server)
+                    ServerCard(
+                        server = server,
+                        httpClient = httpClient,
+                        accessToken = accessToken,
+                        onCordon = {
+                            if (window.confirm("${server.name} への新規Podのスケジューリングを停止しますか?(既存Podには影響しません)")) {
+                                runAction { cordonNode(httpClient, accessToken, server.id) }
+                            }
+                        },
+                        onUncordon = {
+                            if (window.confirm("${server.name} への新規Podのスケジューリングを再開しますか?")) {
+                                runAction { uncordonNode(httpClient, accessToken, server.id) }
+                            }
+                        },
+                        onDrain = {
+                            if (window.confirm("${server.name} 上の全Pod(DaemonSet管理下を除く)を退避しますか?影響範囲が大きい操作です。")) {
+                                scope.launch {
+                                    val result = try {
+                                        drainNode(httpClient, accessToken, server.id)
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                    statusMessage = if (result != null) {
+                                        "Drain完了: 退避${result.evicted}件 / スキップ${result.skipped}件 / 失敗${result.failed}件"
+                                    } else {
+                                        "Drainに失敗しました"
+                                    }
+                                    refreshKey++
+                                }
+                            }
+                        },
+                        onDeletePod = { pod ->
+                            if (window.confirm("${pod.namespace}/${pod.name} を再起動(削除)しますか?")) {
+                                runAction { deletePod(httpClient, accessToken, pod.namespace, pod.name) }
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -90,7 +148,28 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun ServerCard(server: ServerStatus) {
+private fun ServerCard(
+    server: ServerStatus,
+    httpClient: HttpClient,
+    accessToken: String,
+    onCordon: () -> Unit,
+    onUncordon: () -> Unit,
+    onDrain: () -> Unit,
+    onDeletePod: (PodSummary) -> Unit
+) {
+    var showPods by remember { mutableStateOf(false) }
+    var pods by remember { mutableStateOf<List<PodSummary>?>(null) }
+
+    LaunchedEffect(showPods, server.id) {
+        if (showPods) {
+            pods = try {
+                fetchPodsOnNode(httpClient, accessToken, server.id).pods
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -120,6 +199,46 @@ private fun ServerCard(server: ServerStatus) {
             "kubelet ${server.kubeletVersion} / ${server.osImage}",
             modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
         )
+        SpanText(
+            if (server.schedulable) "スケジューリング: 有効" else "スケジューリング: 停止中",
+            modifier = Modifier.color(if (server.schedulable) Colors.Gray else Color("#E34948")).fontSize(FontSize.Small)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.px),
+            horizontalArrangement = Arrangement.spacedBy(8.px)
+        ) {
+            if (server.schedulable) {
+                Button(onClick = { onCordon() }) { SpanText("Cordon") }
+            } else {
+                Button(onClick = { onUncordon() }) { SpanText("Uncordon") }
+            }
+            Button(onClick = { onDrain() }) { SpanText("Drain") }
+            Button(onClick = { showPods = !showPods }) { SpanText(if (showPods) "Podを隠す" else "Pod一覧") }
+        }
+
+        if (showPods) {
+            val currentPods = pods
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.px),
+                verticalArrangement = Arrangement.spacedBy(6.px)
+            ) {
+                when {
+                    currentPods == null -> SpanText("読み込み中...")
+                    currentPods.isEmpty() -> SpanText("Podがありません")
+                    else -> currentPods.forEach { pod ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SpanText("${pod.namespace}/${pod.name} (${pod.ownerKind})", modifier = Modifier.fontSize(FontSize.Small))
+                            Button(onClick = { onDeletePod(pod) }) { SpanText("再起動") }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

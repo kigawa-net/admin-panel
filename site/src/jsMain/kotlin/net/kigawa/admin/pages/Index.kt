@@ -19,6 +19,7 @@ import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
+import net.kigawa.admin.auth.KeycloakRealm
 import net.kigawa.admin.networkmap.NetworkMapPage
 import net.kigawa.admin.servers.ServerStatusPage
 import net.kigawa.admin.util.URLSearchParams
@@ -53,7 +54,7 @@ fun HomePage() {
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            LoginPage(onLogin = { scope.launch { authProvider.startLogin() } })
+            LoginPage(onLogin = { realm -> scope.launch { authProvider.startLogin(realm) } })
         }
         is AuthState.Loading -> Box(
             modifier = Modifier.fillMaxSize(),
@@ -61,21 +62,29 @@ fun HomePage() {
         ) {
             LoginPage(isLoading = true, onLogin = {})
         }
-        is AuthState.Authenticated -> when (currentScreen) {
-            AppScreen.Dashboard -> DashboardPage(
-                username = state.username,
-                onLogout = { authProvider.logout() },
-                onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
-                onOpenServers = { currentScreen = AppScreen.Servers }
-            )
-            AppScreen.NetworkMap -> NetworkMapPage(
-                accessToken = state.accessToken,
-                onBack = { currentScreen = AppScreen.Dashboard }
-            )
-            AppScreen.Servers -> ServerStatusPage(
-                accessToken = state.accessToken,
-                onBack = { currentScreen = AppScreen.Dashboard }
-            )
+        is AuthState.Authenticated -> {
+            val isAdmin = state.realm == KeycloakRealm.ADMIN
+            when (currentScreen) {
+                AppScreen.Dashboard -> DashboardPage(
+                    username = state.username,
+                    isAdmin = isAdmin,
+                    onLogout = { authProvider.logout() },
+                    onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
+                    onOpenServers = { currentScreen = AppScreen.Servers }
+                )
+                AppScreen.NetworkMap -> NetworkMapPage(
+                    accessToken = state.accessToken,
+                    onBack = { currentScreen = AppScreen.Dashboard }
+                )
+                AppScreen.Servers -> if (isAdmin) {
+                    ServerStatusPage(
+                        accessToken = state.accessToken,
+                        onBack = { currentScreen = AppScreen.Dashboard }
+                    )
+                } else {
+                    currentScreen = AppScreen.Dashboard
+                }
+            }
         }
         is AuthState.Error -> Box(
             modifier = Modifier.fillMaxSize(),
@@ -83,7 +92,7 @@ fun HomePage() {
         ) {
             LoginPage(
                 error = state.message,
-                onLogin = { scope.launch { authProvider.startLogin() } }
+                onLogin = { realm -> scope.launch { authProvider.startLogin(realm) } }
             )
         }
     }
@@ -93,7 +102,7 @@ fun HomePage() {
 private fun LoginPage(
     isLoading: Boolean = false,
     error: String? = null,
-    onLogin: () -> Unit
+    onLogin: (KeycloakRealm) -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -135,11 +144,19 @@ private fun LoginPage(
             }
 
             Button(
-                onClick = { if (!isLoading) onLogin() },
+                onClick = { if (!isLoading) onLogin(KeycloakRealm.ADMIN) },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !isLoading
             ) {
-                SpanText(if (isLoading) "Signing in..." else "Sign in with Keycloak")
+                SpanText(if (isLoading) "Signing in..." else "管理者としてログイン")
+            }
+
+            Button(
+                onClick = { if (!isLoading) onLogin(KeycloakRealm.PUBLIC) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isLoading
+            ) {
+                SpanText("一般利用者としてログイン")
             }
         }
     }
@@ -148,6 +165,7 @@ private fun LoginPage(
 @Composable
 private fun DashboardPage(
     username: String,
+    isAdmin: Boolean,
     onLogout: () -> Unit,
     onOpenNetworkMap: () -> Unit,
     onOpenServers: () -> Unit
@@ -225,24 +243,26 @@ private fun DashboardPage(
                 )
             }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.px)
-                    .backgroundColor(Colors.White)
-                    .borderRadius(8.px)
-                    .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
-                    .onClick { onOpenServers() }
-                    .cursor(Cursor.Pointer)
-            ) {
-                SpanText(
-                    "サーバー管理",
-                    modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
-                )
-                SpanText(
-                    "各ノードの稼働状態を確認する",
-                    modifier = Modifier.color(Colors.Gray)
-                )
+            if (isAdmin) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.px)
+                        .backgroundColor(Colors.White)
+                        .borderRadius(8.px)
+                        .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
+                        .onClick { onOpenServers() }
+                        .cursor(Cursor.Pointer)
+                ) {
+                    SpanText(
+                        "サーバー管理",
+                        modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
+                    )
+                    SpanText(
+                        "各ノードの稼働状態を確認・操作する",
+                        modifier = Modifier.color(Colors.Gray)
+                    )
+                }
             }
         }
     }

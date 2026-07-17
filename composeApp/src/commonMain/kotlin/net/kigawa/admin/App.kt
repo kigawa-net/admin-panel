@@ -3,6 +3,7 @@ package net.kigawa.admin
 import androidx.compose.runtime.*
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
+import net.kigawa.admin.auth.KeycloakRealm
 import net.kigawa.admin.networkmap.NetworkMapScreen
 import net.kigawa.admin.screen.DashboardScreen
 import net.kigawa.admin.screen.LoginScreen
@@ -29,15 +30,19 @@ fun App(authProvider: KeycloakAuthProvider) {
 
     when (val state = authState) {
         is AuthState.Unauthenticated -> {
-            LoginScreen(onLogin = { authProvider.login() })
+            LoginScreen(onLogin = { realm -> authProvider.login(realm) })
         }
         is AuthState.Loading -> {
             LoginScreen(isLoading = true, onLogin = {})
         }
         is AuthState.Authenticated -> {
+            // サーバー管理画面はUI上も管理用realmのユーザーにのみ表示する。実際のアクセス制御は
+            // バックエンド側でも独立に(realmごとに)検証されるため、これは利便性のための制御。
+            val isAdmin = state.realm == KeycloakRealm.ADMIN
             when (currentScreen) {
                 AppScreen.Dashboard -> DashboardScreen(
                     username = state.username,
+                    isAdmin = isAdmin,
                     onLogout = { authProvider.logout() },
                     onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
                     onOpenTraffic = { currentScreen = AppScreen.Traffic },
@@ -51,16 +56,20 @@ fun App(authProvider: KeycloakAuthProvider) {
                     accessToken = state.accessToken,
                     onBack = { currentScreen = AppScreen.Dashboard }
                 )
-                AppScreen.Servers -> ServerStatusScreen(
-                    accessToken = state.accessToken,
-                    onBack = { currentScreen = AppScreen.Dashboard }
-                )
+                AppScreen.Servers -> if (isAdmin) {
+                    ServerStatusScreen(
+                        accessToken = state.accessToken,
+                        onBack = { currentScreen = AppScreen.Dashboard }
+                    )
+                } else {
+                    currentScreen = AppScreen.Dashboard
+                }
             }
         }
         is AuthState.Error -> {
             LoginScreen(
                 error = state.message,
-                onLogin = { authProvider.login() }
+                onLogin = { realm -> authProvider.login(realm) }
             )
         }
     }

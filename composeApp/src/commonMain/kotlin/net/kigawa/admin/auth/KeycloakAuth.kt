@@ -14,10 +14,21 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
+/**
+ * 管理用realm(全機能。サーバー管理の閲覧・操作を含む)とpublic用realm(閲覧専用。
+ * ダッシュボード・ネットワークマップ・トラフィックのみ)の2つを切り替えてログインできる。
+ * どちらのrealmで認証したかはバックエンド側でも独立に検証される(クライアント側の画面出し
+ * 分けは利便性のためであり、アクセス制御の境界はサーバー側にある)。
+ */
+enum class KeycloakRealm(val realmName: String, val label: String) {
+    ADMIN("manage", "管理者"),
+    PUBLIC("kigawa-net", "一般利用者")
+}
+
 sealed class AuthState {
     object Unauthenticated : AuthState()
     object Loading : AuthState()
-    data class Authenticated(val username: String, val accessToken: String) : AuthState()
+    data class Authenticated(val username: String, val accessToken: String, val realm: KeycloakRealm) : AuthState()
     data class Error(val message: String) : AuthState()
 }
 
@@ -40,19 +51,17 @@ data class UserInfoResponse(
 
 interface KeycloakAuthConfig {
     val serverUrl: String
-    val realm: String
     val clientId: String
 }
 
 object DefaultKeycloakConfig : KeycloakAuthConfig {
     override val serverUrl: String = "https://user.kigawa.net"
-    override val realm: String = "manage"
     override val clientId: String = "admin-panel"
 }
 
-private val KeycloakAuthConfig.authUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/auth"
-private val KeycloakAuthConfig.tokenUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/token"
-private val KeycloakAuthConfig.userInfoUrl get() = "$serverUrl/realms/$realm/protocol/openid-connect/userinfo"
+private fun KeycloakAuthConfig.authUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/auth"
+private fun KeycloakAuthConfig.tokenUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/token"
+private fun KeycloakAuthConfig.userInfoUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/userinfo"
 
 expect fun createHttpClient(): HttpClient
 
@@ -72,9 +81,10 @@ private fun generatePkceRequest(): PkceRequest {
 
 private fun buildAuthorizationUrl(
     config: KeycloakAuthConfig,
+    realm: KeycloakRealm,
     redirectUri: String,
     pkce: PkceRequest
-): String = URLBuilder(config.authUrl).apply {
+): String = URLBuilder(config.authUrl(realm)).apply {
     parameters.append("response_type", "code")
     parameters.append("client_id", config.clientId)
     parameters.append("redirect_uri", redirectUri)
@@ -105,13 +115,15 @@ class KeycloakAuthProvider(
 
     private var pendingVerifier: String? = null
     private var pendingState: String? = null
+    private var pendingRealm: KeycloakRealm? = null
 
-    fun login() {
+    fun login(realm: KeycloakRealm) {
         val pkce = generatePkceRequest()
         pendingVerifier = pkce.codeVerifier
         pendingState = pkce.state
+        pendingRealm = realm
         _authState.value = AuthState.Loading
-        launchAuthorizationUrl(buildAuthorizationUrl(config, redirectUri, pkce))
+        launchAuthorizationUrl(buildAuthorizationUrl(config, realm, redirectUri, pkce))
     }
 
     /** Call once the platform has captured the redirect to [redirectUri]. */
@@ -122,10 +134,12 @@ class KeycloakAuthProvider(
         }
         val expectedState = pendingState
         val codeVerifier = pendingVerifier
+        val realm = pendingRealm
         pendingState = null
         pendingVerifier = null
+        pendingRealm = null
 
-        if (code == null || state == null || state != expectedState || codeVerifier == null) {
+        if (code == null || state == null || state != expectedState || codeVerifier == null || realm == null) {
             _authState.value = AuthState.Error("認証レスポンスが不正です")
             return
         }
@@ -134,7 +148,7 @@ class KeycloakAuthProvider(
             _authState.value = AuthState.Loading
             try {
                 val tokenResponse = httpClient.submitForm(
-                    url = config.tokenUrl,
+                    url = config.tokenUrl(realm),
                     formParameters = parameters {
                         append("grant_type", "authorization_code")
                         append("client_id", config.clientId)
@@ -144,7 +158,7 @@ class KeycloakAuthProvider(
                     }
                 ).body<TokenResponse>()
 
-                val userInfo = httpClient.get(config.userInfoUrl) {
+                val userInfo = httpClient.get(config.userInfoUrl(realm)) {
                     bearerAuth(tokenResponse.accessToken)
                 }.body<UserInfoResponse>()
 
@@ -155,7 +169,8 @@ class KeycloakAuthProvider(
 
                 _authState.value = AuthState.Authenticated(
                     username = displayName,
-                    accessToken = tokenResponse.accessToken
+                    accessToken = tokenResponse.accessToken,
+                    realm = realm
                 )
             } catch (e: Exception) {
                 _authState.value = AuthState.Error(

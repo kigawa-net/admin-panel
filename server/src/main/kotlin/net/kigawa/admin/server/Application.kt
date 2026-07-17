@@ -20,7 +20,9 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
+import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -34,8 +36,16 @@ import kotlinx.serialization.json.jsonPrimitive
 internal val prometheusUrl =
     System.getenv("PROMETHEUS_URL") ?: "http://prometheus-operated.prometheus.svc.cluster.local:9090"
 
-private val keycloakUserInfoUrl = System.getenv("KEYCLOAK_USERINFO_URL")
+/**
+ * 管理用realm(全機能)とpublic用realm(閲覧専用)の2つを独立に検証する。どちらのrealmで
+ * 発行されたトークンかはuserinfoエンドポイントへの到達可否で判定する(JWT自体の検証はKeycloak
+ * 側のuserinfo呼び出しに委譲している)。public用realmは実運用ではKeycloak側で別途作成が必要。
+ */
+private val adminRealmUserInfoUrl = System.getenv("KEYCLOAK_ADMIN_USERINFO_URL")
     ?: "https://user.kigawa.net/realms/manage/protocol/openid-connect/userinfo"
+
+private val publicRealmUserInfoUrl = System.getenv("KEYCLOAK_PUBLIC_USERINFO_URL")
+    ?: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
 
 @Serializable
 data class TrafficPoint(
@@ -91,7 +101,7 @@ fun Application.module() {
 
         get("/api/traffic") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
                 return@get
             }
@@ -102,7 +112,7 @@ fun Application.module() {
 
         get("/api/network-topology") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
                 return@get
             }
@@ -112,7 +122,7 @@ fun Application.module() {
 
         get("/api/servers") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
                 return@get
             }
@@ -124,12 +134,100 @@ fun Application.module() {
                 call.respond(statuses)
             }
         }
+
+        get("/api/servers/{name}/pods") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@get
+            }
+
+            val pods = listPodsOnNode(nodeName)
+            if (pods == null) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "pod list unavailable"))
+            } else {
+                call.respond(pods)
+            }
+        }
+
+        // 以下は書き込み系のクラスタ操作(Cordon/Uncordon/Drain/Pod削除)。クライアント側で
+        // 確認ダイアログを経由してから呼ばれる想定。
+        post("/api/servers/{name}/cordon") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@post
+            }
+            call.respond(setNodeSchedulable(nodeName, schedulable = false))
+        }
+
+        post("/api/servers/{name}/uncordon") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@post
+            }
+            call.respond(setNodeSchedulable(nodeName, schedulable = true))
+        }
+
+        post("/api/servers/{name}/drain") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@post
+            }
+            call.respond(drainNode(nodeName))
+        }
+
+        delete("/api/pods/{namespace}/{name}") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@delete
+            }
+            val namespace = call.parameters["namespace"]
+            val name = call.parameters["name"]
+            if (namespace.isNullOrBlank() || name.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing namespace or name"))
+                return@delete
+            }
+            call.respond(deletePod(namespace, name))
+        }
     }
 }
 
-private suspend fun isValidToken(client: HttpClient, token: String): Boolean {
+/** 管理用realmのトークンのみ許可。サーバー管理(閲覧・操作)エンドポイントで使う。 */
+private suspend fun isValidAdminToken(client: HttpClient, token: String): Boolean =
+    checkUserInfo(client, adminRealmUserInfoUrl, token)
+
+/** 管理用・public用どちらのrealmのトークンでも許可。ダッシュボード系エンドポイントで使う。 */
+private suspend fun isValidAnyToken(client: HttpClient, token: String): Boolean =
+    checkUserInfo(client, adminRealmUserInfoUrl, token) || checkUserInfo(client, publicRealmUserInfoUrl, token)
+
+private suspend fun checkUserInfo(client: HttpClient, userInfoUrl: String, token: String): Boolean {
     return try {
-        val response: HttpResponse = client.get(keycloakUserInfoUrl) {
+        val response: HttpResponse = client.get(userInfoUrl) {
             header(HttpHeaders.Authorization, "Bearer $token")
         }
         response.status == HttpStatusCode.OK

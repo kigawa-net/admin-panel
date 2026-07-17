@@ -12,6 +12,7 @@ data class ServerStatusDto(
     val name: String,
     val role: String,
     val ready: Boolean,
+    val schedulable: Boolean,
     val kubeletVersion: String,
     val osImage: String,
     val cpuCapacity: String,
@@ -23,20 +24,11 @@ data class ServerStatusDto(
 @Serializable
 data class ServerStatusListDto(val servers: List<ServerStatusDto>)
 
-@Serializable
-private data class K8sPodList(val items: List<K8sPod> = emptyList())
-
-@Serializable
-private data class K8sPod(val spec: K8sPodSpec = K8sPodSpec())
-
-@Serializable
-private data class K8sPodSpec(val nodeName: String? = null)
-
 /**
- * 閲覧専用のノード状態一覧。書き込み系のクラスタ操作(再起動・cordon等)は行わない。
- * discoverKubernetesNodes と同じくSecret不要、ServiceAccountのnodes(get/list)権限のみで動作する。
- * Pod数の取得にはさらにpods(get/list)権限を使う。ノード一覧とPod数はいずれも取得できなければ
- * (in-cluster以外・RBAC未反映など)nullを返し、呼び出し側で「取得できません」を表示させる。
+ * 閲覧専用のノード状態一覧。discoverKubernetesNodes と同じくSecret不要、ServiceAccountの
+ * nodes(get/list)権限のみで動作する。Pod数の取得にはさらにpods(get/list)権限を使う。
+ * ノード一覧とPod数はいずれも取得できなければ(in-cluster以外・RBAC未反映など)nullを返し、
+ * 呼び出し側で「取得できません」を表示させる。
  */
 suspend fun fetchServerStatuses(): ServerStatusListDto? {
     val apiServerUrl = inClusterApiServerUrl() ?: return null
@@ -66,6 +58,7 @@ suspend fun fetchServerStatuses(): ServerStatusListDto? {
                 name = node.metadata.name,
                 role = if (node.isControlPlane()) "CONTROL_PLANE" else "WORKER",
                 ready = ready,
+                schedulable = !node.spec.unschedulable,
                 kubeletVersion = node.status.nodeInfo.kubeletVersion,
                 osImage = node.status.nodeInfo.osImage,
                 cpuCapacity = node.status.capacity["cpu"] ?: "-",

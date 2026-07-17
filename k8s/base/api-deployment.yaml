@@ -21,6 +21,15 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+          env:
+            # 管理用realm(全機能)とpublic用realm(閲覧専用)を独立に検証するためのuserinfo
+            # エンドポイント。public用realmはKeycloak側で別途作成が必要(未作成の間、
+            # public用realmのトークンは常に無効と判定されるだけで、管理用realmの動作には
+            # 影響しない)。
+            - name: KEYCLOAK_ADMIN_USERINFO_URL
+              value: "https://user.kigawa.net/realms/manage/protocol/openid-connect/userinfo"
+            - name: KEYCLOAK_PUBLIC_USERINFO_URL
+              value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
           resources:
             requests:
               cpu: 50m

@@ -12,25 +12,30 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.createHttpClient
 
 private sealed class ServerStatusUiState {
@@ -39,17 +44,44 @@ private sealed class ServerStatusUiState {
     data class Error(val message: String) : ServerStatusUiState()
 }
 
+private data class PendingConfirmation(
+    val title: String,
+    val message: String,
+    val onConfirm: suspend () -> Unit
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ServerStatusScreen(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<ServerStatusUiState>(ServerStatusUiState.Loading) }
+    var refreshKey by remember { mutableStateOf(0) }
+    var pendingConfirmation by remember { mutableStateOf<PendingConfirmation?>(null) }
+    var podListNode by remember { mutableStateOf<ServerStatus?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
     val httpClient = remember { createHttpClient() }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(accessToken) {
+    suspend fun refresh() {
         state = try {
             ServerStatusUiState.Loaded(fetchServerStatuses(httpClient, accessToken).servers)
         } catch (e: Exception) {
             ServerStatusUiState.Error("サーバー状態を取得できませんでした")
+        }
+    }
+
+    LaunchedEffect(accessToken, refreshKey) {
+        refresh()
+    }
+
+    fun runAction(action: suspend () -> ActionResult) {
+        scope.launch {
+            val result = try {
+                action()
+            } catch (e: Exception) {
+                ActionResult(false, e.message ?: "失敗しました")
+            }
+            statusMessage = result.message
+            refreshKey++
         }
     }
 
@@ -73,21 +105,115 @@ fun ServerStatusScreen(accessToken: String, onBack: () -> Unit) {
                     modifier = Modifier.align(Alignment.Center).padding(16.dp),
                     color = MaterialTheme.colorScheme.error
                 )
-                is ServerStatusUiState.Loaded -> LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(current.servers) { server ->
-                        ServerCard(server)
+                is ServerStatusUiState.Loaded -> Column(modifier = Modifier.fillMaxSize()) {
+                    statusMessage?.let { message ->
+                        Text(
+                            text = message,
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize().padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(current.servers) { server ->
+                            ServerCard(
+                                server = server,
+                                onCordon = {
+                                    pendingConfirmation = PendingConfirmation(
+                                        title = "スケジューリングを停止しますか?",
+                                        message = "${server.name} への新規Podのスケジューリングを停止します(既存Podには影響しません)。",
+                                        onConfirm = { runAction { cordonNode(httpClient, accessToken, server.id) } }
+                                    )
+                                },
+                                onUncordon = {
+                                    pendingConfirmation = PendingConfirmation(
+                                        title = "スケジューリングを再開しますか?",
+                                        message = "${server.name} への新規Podのスケジューリングを再開します。",
+                                        onConfirm = { runAction { uncordonNode(httpClient, accessToken, server.id) } }
+                                    )
+                                },
+                                onDrain = {
+                                    pendingConfirmation = PendingConfirmation(
+                                        title = "ノードをDrainしますか?",
+                                        message = "${server.name} 上の全Pod(DaemonSet管理下を除く)を退避します。影響範囲が大きい操作です。",
+                                        onConfirm = {
+                                            scope.launch {
+                                                val result = try {
+                                                    drainNode(httpClient, accessToken, server.id)
+                                                } catch (e: Exception) {
+                                                    null
+                                                }
+                                                statusMessage = if (result != null) {
+                                                    "Drain完了: 退避${result.evicted}件 / スキップ${result.skipped}件 / 失敗${result.failed}件"
+                                                } else {
+                                                    "Drainに失敗しました"
+                                                }
+                                                refreshKey++
+                                            }
+                                        }
+                                    )
+                                },
+                                onShowPods = { podListNode = server }
+                            )
+                        }
                     }
                 }
+            }
+
+            pendingConfirmation?.let { confirmation ->
+                AlertDialog(
+                    onDismissRequest = { pendingConfirmation = null },
+                    title = { Text(confirmation.title) },
+                    text = { Text(confirmation.message) },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val onConfirm = confirmation.onConfirm
+                            pendingConfirmation = null
+                            scope.launch { onConfirm() }
+                        }) {
+                            Text("実行する")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingConfirmation = null }) {
+                            Text("キャンセル")
+                        }
+                    }
+                )
+            }
+
+            podListNode?.let { node ->
+                PodListDialog(
+                    server = node,
+                    accessToken = accessToken,
+                    httpClient = httpClient,
+                    onDismiss = { podListNode = null },
+                    onRequestDeletePod = { pod ->
+                        pendingConfirmation = PendingConfirmation(
+                            title = "Podを再起動しますか?",
+                            message = "${pod.namespace}/${pod.name} を削除します(所有者があれば自動的に再作成されます)。",
+                            onConfirm = {
+                                runAction { deletePod(httpClient, accessToken, pod.namespace, pod.name) }
+                                podListNode = null
+                            }
+                        )
+                    }
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ServerCard(server: ServerStatus) {
+private fun ServerCard(
+    server: ServerStatus,
+    onCordon: () -> Unit,
+    onUncordon: () -> Unit,
+    onDrain: () -> Unit,
+    onShowPods: () -> Unit
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -109,6 +235,24 @@ private fun ServerCard(server: ServerStatus) {
             }
             Text(podText, style = MaterialTheme.typography.bodySmall)
             Text("kubelet ${server.kubeletVersion} / ${server.osImage}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                if (server.schedulable) "スケジューリング: 有効" else "スケジューリング: 停止中",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (server.schedulable) MaterialTheme.colorScheme.onSurfaceVariant else Color(0xFFE34948)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (server.schedulable) {
+                    OutlinedButton(onClick = onCordon) { Text("Cordon") }
+                } else {
+                    OutlinedButton(onClick = onUncordon) { Text("Uncordon") }
+                }
+                OutlinedButton(onClick = onDrain) { Text("Drain") }
+                OutlinedButton(onClick = onShowPods) { Text("Pod一覧") }
+            }
         }
     }
 }
@@ -125,4 +269,57 @@ private fun ReadyBadge(ready: Boolean) {
         }
         Text(label, style = MaterialTheme.typography.labelMedium, color = color)
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PodListDialog(
+    server: ServerStatus,
+    accessToken: String,
+    httpClient: io.ktor.client.HttpClient,
+    onDismiss: () -> Unit,
+    onRequestDeletePod: (PodSummary) -> Unit
+) {
+    var pods by remember { mutableStateOf<List<PodSummary>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(server.id) {
+        try {
+            pods = fetchPodsOnNode(httpClient, accessToken, server.id).pods
+        } catch (e: Exception) {
+            error = "Pod一覧を取得できませんでした"
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${server.name} のPod一覧") },
+        text = {
+            when {
+                error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+                pods == null -> CircularProgressIndicator()
+                pods!!.isEmpty() -> Text("Podがありません")
+                else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    pods!!.forEach { pod ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("${pod.namespace}/${pod.name}", style = MaterialTheme.typography.bodyMedium)
+                                Text(pod.ownerKind, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            TextButton(onClick = { onRequestDeletePod(pod) }) {
+                                Text("再起動")
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("閉じる") }
+        }
+    )
 }
