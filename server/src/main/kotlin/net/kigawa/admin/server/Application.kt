@@ -20,7 +20,9 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
+import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -123,6 +125,86 @@ fun Application.module() {
             } else {
                 call.respond(statuses)
             }
+        }
+
+        get("/api/servers/{name}/pods") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@get
+            }
+
+            val pods = listPodsOnNode(nodeName)
+            if (pods == null) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "pod list unavailable"))
+            } else {
+                call.respond(pods)
+            }
+        }
+
+        // 以下は書き込み系のクラスタ操作(Cordon/Uncordon/Drain/Pod削除)。クライアント側で
+        // 確認ダイアログを経由してから呼ばれる想定。
+        post("/api/servers/{name}/cordon") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@post
+            }
+            call.respond(setNodeSchedulable(nodeName, schedulable = false))
+        }
+
+        post("/api/servers/{name}/uncordon") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@post
+            }
+            call.respond(setNodeSchedulable(nodeName, schedulable = true))
+        }
+
+        post("/api/servers/{name}/drain") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@post
+            }
+            call.respond(drainNode(nodeName))
+        }
+
+        delete("/api/pods/{namespace}/{name}") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@delete
+            }
+            val namespace = call.parameters["namespace"]
+            val name = call.parameters["name"]
+            if (namespace.isNullOrBlank() || name.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing namespace or name"))
+                return@delete
+            }
+            call.respond(deletePod(namespace, name))
         }
     }
 }

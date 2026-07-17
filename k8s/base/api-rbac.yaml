@@ -29,3 +29,34 @@ subjects:
   - kind: ServiceAccount
     name: admin-panel-api
     namespace: kigawa-net-admin-panel
+---
+# サーバー管理画面のCordon/Uncordon/Drain/Pod再起動機能に必要な、書き込み系の権限。
+# 読み取り専用の admin-panel-api-node-reader とは別ロールに分離し、必要な操作範囲を
+# 明示的に絞る(nodesのdelete/create、他リソースへの権限は含まない)。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: admin-panel-api-node-operator
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-panel-api-node-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin-panel-api-node-operator
+subjects:
+  - kind: ServiceAccount
+    name: admin-panel-api
+    namespace: kigawa-net-admin-panel

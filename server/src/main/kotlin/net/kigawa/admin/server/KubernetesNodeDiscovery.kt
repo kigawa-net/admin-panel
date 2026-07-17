@@ -24,11 +24,15 @@ internal data class K8sNodeList(val items: List<K8sNode> = emptyList())
 @Serializable
 internal data class K8sNode(
     val metadata: K8sNodeMetadata = K8sNodeMetadata(),
+    val spec: K8sNodeSpec = K8sNodeSpec(),
     val status: K8sNodeStatus = K8sNodeStatus()
 )
 
 @Serializable
 internal data class K8sNodeMetadata(val name: String = "", val labels: Map<String, String> = emptyMap())
+
+@Serializable
+internal data class K8sNodeSpec(val unschedulable: Boolean = false)
 
 @Serializable
 internal data class K8sNodeStatus(
@@ -50,6 +54,28 @@ internal data class K8sNodeInfo(val kubeletVersion: String = "", val osImage: St
 internal fun K8sNode.isControlPlane(): Boolean = metadata.labels.keys.any {
     it == "node-role.kubernetes.io/control-plane" || it == "node-role.kubernetes.io/master"
 }
+
+@Serializable
+internal data class K8sPodList(val items: List<K8sPod> = emptyList())
+
+@Serializable
+internal data class K8sPod(
+    val metadata: K8sPodMetadata = K8sPodMetadata(),
+    val spec: K8sPodSpec = K8sPodSpec()
+)
+
+@Serializable
+internal data class K8sPodMetadata(
+    val name: String = "",
+    val namespace: String = "",
+    val ownerReferences: List<K8sOwnerReference> = emptyList()
+)
+
+@Serializable
+internal data class K8sOwnerReference(val kind: String = "")
+
+@Serializable
+internal data class K8sPodSpec(val nodeName: String? = null)
 
 /**
  * Secretを一切使わず、Podに自動マウントされるServiceAccountトークン/CA証明書だけを使って
