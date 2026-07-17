@@ -18,6 +18,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.header
+import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
@@ -213,6 +214,99 @@ fun Application.module() {
                 return@delete
             }
             call.respond(deletePod(namespace, name))
+        }
+
+        // ユーザー管理(manage realmのみ)。Keycloak Admin REST APIを専用サービスアカウント
+        // (client_credentials)経由で呼ぶ。サービスアカウント未設定の場合は503を返す。
+        get("/api/users") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val users = listKeycloakUsers(httpClient)
+            if (users == null) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "user list unavailable"))
+            } else {
+                call.respond(users)
+            }
+        }
+
+        post("/api/users") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val request = try {
+                call.receive<CreateUserRequest>()
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                return@post
+            }
+            call.respond(createKeycloakUser(httpClient, request))
+        }
+
+        delete("/api/users/{id}") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@delete
+            }
+            val userId = call.parameters["id"]
+            if (userId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                return@delete
+            }
+            call.respond(deleteKeycloakUser(httpClient, userId))
+        }
+
+        post("/api/users/{id}/enable") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val userId = call.parameters["id"]
+            if (userId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                return@post
+            }
+            call.respond(setKeycloakUserEnabled(httpClient, userId, enabled = true))
+        }
+
+        post("/api/users/{id}/disable") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val userId = call.parameters["id"]
+            if (userId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                return@post
+            }
+            call.respond(setKeycloakUserEnabled(httpClient, userId, enabled = false))
+        }
+
+        post("/api/users/{id}/reset-password") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val userId = call.parameters["id"]
+            if (userId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                return@post
+            }
+            val request = try {
+                call.receive<ResetPasswordRequest>()
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                return@post
+            }
+            call.respond(resetKeycloakUserPassword(httpClient, userId, request.newPassword, request.temporary))
         }
     }
 }

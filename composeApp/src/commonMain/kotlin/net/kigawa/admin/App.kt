@@ -9,12 +9,14 @@ import net.kigawa.admin.screen.DashboardScreen
 import net.kigawa.admin.screen.LoginScreen
 import net.kigawa.admin.servers.ServerStatusScreen
 import net.kigawa.admin.traffic.TrafficScreen
+import net.kigawa.admin.users.UserManagementScreen
 
 private sealed class AppScreen {
     object Dashboard : AppScreen()
     object NetworkMap : AppScreen()
     object Traffic : AppScreen()
     object Servers : AppScreen()
+    object Users : AppScreen()
 }
 
 @Composable
@@ -36,8 +38,9 @@ fun App(authProvider: KeycloakAuthProvider) {
             LoginScreen(isLoading = true, onLogin = {})
         }
         is AuthState.Authenticated -> {
-            // サーバー管理画面はUI上も管理用realmのユーザーにのみ表示する。実際のアクセス制御は
-            // バックエンド側でも独立に(realmごとに)検証されるため、これは利便性のための制御。
+            // サーバー管理・ユーザー管理画面はUI上も管理用realmのユーザーにのみ表示する。実際の
+            // アクセス制御はバックエンド側でも独立に(realmごとに)検証されるため、これは利便性
+            // のための制御。
             val isAdmin = state.realm == KeycloakRealm.ADMIN
             when (currentScreen) {
                 AppScreen.Dashboard -> DashboardScreen(
@@ -46,7 +49,8 @@ fun App(authProvider: KeycloakAuthProvider) {
                     onLogout = { authProvider.logout() },
                     onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
                     onOpenTraffic = { currentScreen = AppScreen.Traffic },
-                    onOpenServers = { currentScreen = AppScreen.Servers }
+                    onOpenServers = { currentScreen = AppScreen.Servers },
+                    onOpenUsers = { currentScreen = AppScreen.Users }
                 )
                 AppScreen.NetworkMap -> NetworkMapScreen(
                     accessToken = state.accessToken,
@@ -58,6 +62,14 @@ fun App(authProvider: KeycloakAuthProvider) {
                 )
                 AppScreen.Servers -> if (isAdmin) {
                     ServerStatusScreen(
+                        accessToken = state.accessToken,
+                        onBack = { currentScreen = AppScreen.Dashboard }
+                    )
+                } else {
+                    currentScreen = AppScreen.Dashboard
+                }
+                AppScreen.Users -> if (isAdmin) {
+                    UserManagementScreen(
                         accessToken = state.accessToken,
                         onBack = { currentScreen = AppScreen.Dashboard }
                     )
