@@ -20,12 +20,14 @@ import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.networkmap.NetworkMapPage
+import net.kigawa.admin.servers.ServerStatusPage
 import net.kigawa.admin.util.URLSearchParams
 import org.jetbrains.compose.web.css.*
 
 private sealed class AppScreen {
     object Dashboard : AppScreen()
     object NetworkMap : AppScreen()
+    object Servers : AppScreen()
 }
 
 @Page
@@ -63,9 +65,14 @@ fun HomePage() {
             AppScreen.Dashboard -> DashboardPage(
                 username = state.username,
                 onLogout = { authProvider.logout() },
-                onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap }
+                onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
+                onOpenServers = { currentScreen = AppScreen.Servers }
             )
             AppScreen.NetworkMap -> NetworkMapPage(
+                accessToken = state.accessToken,
+                onBack = { currentScreen = AppScreen.Dashboard }
+            )
+            AppScreen.Servers -> ServerStatusPage(
                 accessToken = state.accessToken,
                 onBack = { currentScreen = AppScreen.Dashboard }
             )
@@ -142,7 +149,8 @@ private fun LoginPage(
 private fun DashboardPage(
     username: String,
     onLogout: () -> Unit,
-    onOpenNetworkMap: () -> Unit
+    onOpenNetworkMap: () -> Unit,
+    onOpenServers: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -213,6 +221,26 @@ private fun DashboardPage(
                 )
                 SpanText(
                     "kigawa-net の機器構成を図で確認する",
+                    modifier = Modifier.color(Colors.Gray)
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.px)
+                    .backgroundColor(Colors.White)
+                    .borderRadius(8.px)
+                    .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
+                    .onClick { onOpenServers() }
+                    .cursor(Cursor.Pointer)
+            ) {
+                SpanText(
+                    "サーバー管理",
+                    modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
+                )
+                SpanText(
+                    "各ノードの稼働状態を確認する",
                     modifier = Modifier.color(Colors.Gray)
                 )
             }

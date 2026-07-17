@@ -3,16 +3,18 @@ kind: ServiceAccount
 metadata:
   name: admin-panel-api
 ---
-# admin-panel-api がノード一覧(名前・内部IP・ロール)をKubernetes APIから直接取得し
-# ネットワークマップを描画するために必要な、読み取り専用・クラスタスコープの権限。
-# nodes は namespace を持たないリソースのため ClusterRole/ClusterRoleBinding が必要。
+# admin-panel-api がノード一覧・状態(名前・内部IP・ロール・Ready状態・Pod数)を
+# Kubernetes APIから直接取得しネットワークマップ/サーバー管理画面を描画するために
+# 必要な、読み取り専用・クラスタスコープの権限。書き込み系の verb は一切含まない。
+# nodes/pods は namespace を持たない/全namespace横断のため ClusterRole/ClusterRoleBinding
+# が必要。
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: admin-panel-api-node-reader
 rules:
   - apiGroups: [""]
-    resources: ["nodes"]
+    resources: ["nodes", "pods"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
