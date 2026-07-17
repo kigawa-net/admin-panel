@@ -19,7 +19,7 @@ import kotlinx.serialization.Serializable
 
 private const val ADMIN_REALM = "manage"
 
-private val keycloakServerUrl = System.getenv("KEYCLOAK_SERVER_URL") ?: "https://user.kigawa.net"
+internal val keycloakServerUrl = System.getenv("KEYCLOAK_SERVER_URL") ?: "https://user.kigawa.net"
 
 /**
  * ユーザー管理機能はKeycloak Admin REST APIを叩く専用のサービスアカウント(client_credentials
@@ -181,7 +181,7 @@ suspend fun deleteKeycloakUser(client: HttpClient, userId: String): ActionResult
 }
 
 /** JSON文字列リテラルとして安全にエスケープする(バックスラッシュ・二重引用符・制御文字)。 */
-private fun jsonStringLiteral(value: String): String {
+internal fun jsonStringLiteral(value: String): String {
     val escaped = buildString {
         append('"')
         for (c in value) {

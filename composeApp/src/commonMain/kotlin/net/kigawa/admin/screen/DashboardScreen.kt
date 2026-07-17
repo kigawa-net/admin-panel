@@ -20,7 +20,8 @@ fun DashboardScreen(
     onOpenNetworkMap: () -> Unit,
     onOpenTraffic: () -> Unit,
     onOpenServers: () -> Unit,
-    onOpenUsers: () -> Unit
+    onOpenUsers: () -> Unit,
+    onOpenOrganizations: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -139,6 +140,20 @@ fun DashboardScreen(
                         )
                         Text(
                             text = "Keycloakユーザーの作成・削除・パスワードリセットを行う",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Card(modifier = Modifier.fillMaxWidth().clickable { onOpenOrganizations() }) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "組織管理",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "組織の作成・削除とメンバー管理を行う",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

@@ -49,6 +49,24 @@ spec:
                   name: admin-panel-keycloak-service-account
                   key: clientSecret
                   optional: true
+            # 組織管理機能(組織の一覧・作成・削除・メンバー管理)が使う、Keycloak
+            # Organizations REST API専用のサービスアカウント(client_credentials)。
+            # Organizationsはkigawa-net realm(一般利用者向け)で有効化されており、
+            # 上記のユーザー管理用サービスアカウントとは別のクライアント
+            # admin-panel-org-service を使う(Keycloak側の設定はこのリポジトリの範囲外)。
+            # 未設定の間は組織管理系エンドポイントが503を返すのみで、他機能には影響しない。
+            - name: KEYCLOAK_ORG_API_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-org-service-keycloak
+                  key: clientId
+                  optional: true
+            - name: KEYCLOAK_ORG_API_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-org-service-keycloak
+                  key: clientSecret
+                  optional: true
           resources:
             requests:
               cpu: 50m

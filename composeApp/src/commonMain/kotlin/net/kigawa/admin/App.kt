@@ -5,6 +5,7 @@ import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.auth.KeycloakRealm
 import net.kigawa.admin.networkmap.NetworkMapScreen
+import net.kigawa.admin.organizations.OrganizationScreen
 import net.kigawa.admin.screen.DashboardScreen
 import net.kigawa.admin.screen.LoginScreen
 import net.kigawa.admin.servers.ServerStatusScreen
@@ -17,6 +18,7 @@ private sealed class AppScreen {
     object Traffic : AppScreen()
     object Servers : AppScreen()
     object Users : AppScreen()
+    object Organizations : AppScreen()
 }
 
 @Composable
@@ -50,7 +52,8 @@ fun App(authProvider: KeycloakAuthProvider) {
                     onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
                     onOpenTraffic = { currentScreen = AppScreen.Traffic },
                     onOpenServers = { currentScreen = AppScreen.Servers },
-                    onOpenUsers = { currentScreen = AppScreen.Users }
+                    onOpenUsers = { currentScreen = AppScreen.Users },
+                    onOpenOrganizations = { currentScreen = AppScreen.Organizations }
                 )
                 AppScreen.NetworkMap -> NetworkMapScreen(
                     accessToken = state.accessToken,
@@ -70,6 +73,14 @@ fun App(authProvider: KeycloakAuthProvider) {
                 }
                 AppScreen.Users -> if (isAdmin) {
                     UserManagementScreen(
+                        accessToken = state.accessToken,
+                        onBack = { currentScreen = AppScreen.Dashboard }
+                    )
+                } else {
+                    currentScreen = AppScreen.Dashboard
+                }
+                AppScreen.Organizations -> if (isAdmin) {
+                    OrganizationScreen(
                         accessToken = state.accessToken,
                         onBack = { currentScreen = AppScreen.Dashboard }
                     )

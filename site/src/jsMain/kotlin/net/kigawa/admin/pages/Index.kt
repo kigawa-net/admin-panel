@@ -21,6 +21,7 @@ import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.auth.KeycloakRealm
 import net.kigawa.admin.networkmap.NetworkMapPage
+import net.kigawa.admin.organizations.OrganizationPage
 import net.kigawa.admin.servers.ServerStatusPage
 import net.kigawa.admin.users.UserManagementPage
 import net.kigawa.admin.util.URLSearchParams
@@ -31,6 +32,7 @@ private sealed class AppScreen {
     object NetworkMap : AppScreen()
     object Servers : AppScreen()
     object Users : AppScreen()
+    object Organizations : AppScreen()
 }
 
 @Page
@@ -73,7 +75,8 @@ fun HomePage() {
                     onLogout = { authProvider.logout() },
                     onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
                     onOpenServers = { currentScreen = AppScreen.Servers },
-                    onOpenUsers = { currentScreen = AppScreen.Users }
+                    onOpenUsers = { currentScreen = AppScreen.Users },
+                    onOpenOrganizations = { currentScreen = AppScreen.Organizations }
                 )
                 AppScreen.NetworkMap -> NetworkMapPage(
                     accessToken = state.accessToken,
@@ -89,6 +92,14 @@ fun HomePage() {
                 }
                 AppScreen.Users -> if (isAdmin) {
                     UserManagementPage(
+                        accessToken = state.accessToken,
+                        onBack = { currentScreen = AppScreen.Dashboard }
+                    )
+                } else {
+                    currentScreen = AppScreen.Dashboard
+                }
+                AppScreen.Organizations -> if (isAdmin) {
+                    OrganizationPage(
                         accessToken = state.accessToken,
                         onBack = { currentScreen = AppScreen.Dashboard }
                     )
@@ -180,7 +191,8 @@ private fun DashboardPage(
     onLogout: () -> Unit,
     onOpenNetworkMap: () -> Unit,
     onOpenServers: () -> Unit,
-    onOpenUsers: () -> Unit
+    onOpenUsers: () -> Unit,
+    onOpenOrganizations: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -292,6 +304,26 @@ private fun DashboardPage(
                     )
                     SpanText(
                         "Keycloakユーザーの作成・削除・パスワードリセットを行う",
+                        modifier = Modifier.color(Colors.Gray)
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.px)
+                        .backgroundColor(Colors.White)
+                        .borderRadius(8.px)
+                        .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
+                        .onClick { onOpenOrganizations() }
+                        .cursor(Cursor.Pointer)
+                ) {
+                    SpanText(
+                        "組織管理",
+                        modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
+                    )
+                    SpanText(
+                        "組織の作成・削除とメンバー管理を行う",
                         modifier = Modifier.color(Colors.Gray)
                     )
                 }
