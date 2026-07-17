@@ -19,22 +19,37 @@ import javax.net.ssl.X509TrustManager
 private const val SERVICE_ACCOUNT_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 @Serializable
-private data class K8sNodeList(val items: List<K8sNode> = emptyList())
+internal data class K8sNodeList(val items: List<K8sNode> = emptyList())
 
 @Serializable
-private data class K8sNode(
+internal data class K8sNode(
     val metadata: K8sNodeMetadata = K8sNodeMetadata(),
     val status: K8sNodeStatus = K8sNodeStatus()
 )
 
 @Serializable
-private data class K8sNodeMetadata(val name: String = "", val labels: Map<String, String> = emptyMap())
+internal data class K8sNodeMetadata(val name: String = "", val labels: Map<String, String> = emptyMap())
 
 @Serializable
-private data class K8sNodeStatus(val addresses: List<K8sNodeAddress> = emptyList())
+internal data class K8sNodeStatus(
+    val addresses: List<K8sNodeAddress> = emptyList(),
+    val conditions: List<K8sNodeCondition> = emptyList(),
+    val capacity: Map<String, String> = emptyMap(),
+    val nodeInfo: K8sNodeInfo = K8sNodeInfo()
+)
 
 @Serializable
-private data class K8sNodeAddress(val type: String = "", val address: String = "")
+internal data class K8sNodeAddress(val type: String = "", val address: String = "")
+
+@Serializable
+internal data class K8sNodeCondition(val type: String = "", val status: String = "")
+
+@Serializable
+internal data class K8sNodeInfo(val kubeletVersion: String = "", val osImage: String = "")
+
+internal fun K8sNode.isControlPlane(): Boolean = metadata.labels.keys.any {
+    it == "node-role.kubernetes.io/control-plane" || it == "node-role.kubernetes.io/master"
+}
 
 /**
  * Secretを一切使わず、Podに自動マウントされるServiceAccountトークン/CA証明書だけを使って
@@ -56,10 +71,7 @@ suspend fun discoverKubernetesNodes(): List<NetworkDeviceDto> {
         val controlPlanes = mutableListOf<K8sNode>()
         val workers = mutableListOf<K8sNode>()
         for (node in nodeList.items) {
-            val isControlPlane = node.metadata.labels.keys.any {
-                it == "node-role.kubernetes.io/control-plane" || it == "node-role.kubernetes.io/master"
-            }
-            (if (isControlPlane) controlPlanes else workers).add(node)
+            (if (node.isControlPlane()) controlPlanes else workers).add(node)
         }
 
         val devices = mutableListOf<NetworkDeviceDto>()
@@ -95,18 +107,18 @@ private fun xForIndex(index: Int, count: Int): Float {
     return 0.1f + (0.8f * index / (count - 1))
 }
 
-private fun inClusterApiServerUrl(): String? {
+internal fun inClusterApiServerUrl(): String? {
     val host = System.getenv("KUBERNETES_SERVICE_HOST") ?: return null
     val port = System.getenv("KUBERNETES_SERVICE_PORT") ?: "443"
     return "https://$host:$port"
 }
 
-private fun readServiceAccountToken(): String? {
+internal fun readServiceAccountToken(): String? {
     val file = File("$SERVICE_ACCOUNT_DIR/token")
     return if (file.exists()) file.readText().trim() else null
 }
 
-private fun buildKubernetesHttpClient(): HttpClient? {
+internal fun buildKubernetesHttpClient(): HttpClient? {
     val caTrustManager = loadClusterCaTrustManager() ?: return null
     return HttpClient(CIO) {
         engine {

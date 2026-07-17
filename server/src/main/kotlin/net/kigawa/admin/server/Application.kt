@@ -109,6 +109,21 @@ fun Application.module() {
 
             call.respond(loadNetworkTopology(httpClient))
         }
+
+        get("/api/servers") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+
+            val statuses = fetchServerStatuses()
+            if (statuses == null) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "server status unavailable"))
+            } else {
+                call.respond(statuses)
+            }
+        }
     }
 }
 

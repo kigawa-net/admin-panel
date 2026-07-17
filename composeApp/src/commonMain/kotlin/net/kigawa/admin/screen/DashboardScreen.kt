@@ -17,7 +17,8 @@ fun DashboardScreen(
     username: String,
     onLogout: () -> Unit,
     onOpenNetworkMap: () -> Unit,
-    onOpenTraffic: () -> Unit
+    onOpenTraffic: () -> Unit,
+    onOpenServers: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -107,6 +108,20 @@ fun DashboardScreen(
                     )
                     Text(
                         text = "Prometheus から取得した帯域を確認する",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Card(modifier = Modifier.fillMaxWidth().clickable { onOpenServers() }) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "サーバー管理",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "各ノードの稼働状態を確認する",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

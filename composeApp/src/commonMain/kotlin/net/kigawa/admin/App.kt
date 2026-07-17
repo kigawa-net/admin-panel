@@ -6,12 +6,14 @@ import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.networkmap.NetworkMapScreen
 import net.kigawa.admin.screen.DashboardScreen
 import net.kigawa.admin.screen.LoginScreen
+import net.kigawa.admin.servers.ServerStatusScreen
 import net.kigawa.admin.traffic.TrafficScreen
 
 private sealed class AppScreen {
     object Dashboard : AppScreen()
     object NetworkMap : AppScreen()
     object Traffic : AppScreen()
+    object Servers : AppScreen()
 }
 
 @Composable
@@ -38,13 +40,18 @@ fun App(authProvider: KeycloakAuthProvider) {
                     username = state.username,
                     onLogout = { authProvider.logout() },
                     onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
-                    onOpenTraffic = { currentScreen = AppScreen.Traffic }
+                    onOpenTraffic = { currentScreen = AppScreen.Traffic },
+                    onOpenServers = { currentScreen = AppScreen.Servers }
                 )
                 AppScreen.NetworkMap -> NetworkMapScreen(
                     accessToken = state.accessToken,
                     onBack = { currentScreen = AppScreen.Dashboard }
                 )
                 AppScreen.Traffic -> TrafficScreen(
+                    accessToken = state.accessToken,
+                    onBack = { currentScreen = AppScreen.Dashboard }
+                )
+                AppScreen.Servers -> ServerStatusScreen(
                     accessToken = state.accessToken,
                     onBack = { currentScreen = AppScreen.Dashboard }
                 )
