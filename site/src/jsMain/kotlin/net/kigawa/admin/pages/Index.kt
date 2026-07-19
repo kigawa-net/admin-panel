@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.auth.KeycloakRealm
+import net.kigawa.admin.githubapp.GithubAppPage
 import net.kigawa.admin.networkmap.NetworkMapPage
 import net.kigawa.admin.organizations.OrganizationPage
 import net.kigawa.admin.servers.ServerStatusPage
@@ -33,6 +34,7 @@ private sealed class AppScreen {
     object Servers : AppScreen()
     object Users : AppScreen()
     object Organizations : AppScreen()
+    object GithubApp : AppScreen()
 }
 
 @Page
@@ -76,7 +78,8 @@ fun HomePage() {
                     onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
                     onOpenServers = { currentScreen = AppScreen.Servers },
                     onOpenUsers = { currentScreen = AppScreen.Users },
-                    onOpenOrganizations = { currentScreen = AppScreen.Organizations }
+                    onOpenOrganizations = { currentScreen = AppScreen.Organizations },
+                    onOpenGithubApp = { currentScreen = AppScreen.GithubApp }
                 )
                 AppScreen.NetworkMap -> NetworkMapPage(
                     accessToken = state.accessToken,
@@ -100,6 +103,14 @@ fun HomePage() {
                 }
                 AppScreen.Organizations -> if (isAdmin) {
                     OrganizationPage(
+                        accessToken = state.accessToken,
+                        onBack = { currentScreen = AppScreen.Dashboard }
+                    )
+                } else {
+                    currentScreen = AppScreen.Dashboard
+                }
+                AppScreen.GithubApp -> if (isAdmin) {
+                    GithubAppPage(
                         accessToken = state.accessToken,
                         onBack = { currentScreen = AppScreen.Dashboard }
                     )
@@ -192,7 +203,8 @@ private fun DashboardPage(
     onOpenNetworkMap: () -> Unit,
     onOpenServers: () -> Unit,
     onOpenUsers: () -> Unit,
-    onOpenOrganizations: () -> Unit
+    onOpenOrganizations: () -> Unit,
+    onOpenGithubApp: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -324,6 +336,26 @@ private fun DashboardPage(
                     )
                     SpanText(
                         "組織の作成・削除とメンバー管理を行う",
+                        modifier = Modifier.color(Colors.Gray)
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.px)
+                        .backgroundColor(Colors.White)
+                        .borderRadius(8.px)
+                        .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
+                        .onClick { onOpenGithubApp() }
+                        .cursor(Cursor.Pointer)
+                ) {
+                    SpanText(
+                        "GitHub App",
+                        modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
+                    )
+                    SpanText(
+                        "kigawa-net GitHub Appのインストールトークンを発行する",
                         modifier = Modifier.color(Colors.Gray)
                     )
                 }
