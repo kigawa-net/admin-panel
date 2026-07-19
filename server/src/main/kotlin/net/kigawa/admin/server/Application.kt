@@ -227,6 +227,217 @@ fun Application.module() {
             call.respond(deletePod(namespace, name))
         }
 
+        // ユーザー管理(manage realmのみ)。Keycloak Admin REST APIを専用サービスアカウント
+        // (client_credentials)経由で呼ぶ。サービスアカウント未設定の場合は503を返す。
+        get("/api/users") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val users = listKeycloakUsers(httpClient)
+            if (users == null) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "user list unavailable"))
+            } else {
+                call.respond(users)
+            }
+        }
+
+        post("/api/users") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val request = try {
+                call.receive<CreateUserRequest>()
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                return@post
+            }
+            call.respond(createKeycloakUser(httpClient, request))
+        }
+
+        delete("/api/users/{id}") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@delete
+            }
+            val userId = call.parameters["id"]
+            if (userId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                return@delete
+            }
+            call.respond(deleteKeycloakUser(httpClient, userId))
+        }
+
+        post("/api/users/{id}/enable") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val userId = call.parameters["id"]
+            if (userId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                return@post
+            }
+            call.respond(setKeycloakUserEnabled(httpClient, userId, enabled = true))
+        }
+
+        post("/api/users/{id}/disable") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val userId = call.parameters["id"]
+            if (userId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                return@post
+            }
+            call.respond(setKeycloakUserEnabled(httpClient, userId, enabled = false))
+        }
+
+        post("/api/users/{id}/reset-password") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val userId = call.parameters["id"]
+            if (userId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                return@post
+            }
+            val request = try {
+                call.receive<ResetPasswordRequest>()
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                return@post
+            }
+            call.respond(resetKeycloakUserPassword(httpClient, userId, request.newPassword, request.temporary))
+        }
+
+        // 組織管理(manage realmのログインのみ許可、対象データはkigawa-net realm)。
+        // Keycloak Organizations REST APIを専用サービスアカウント(client_credentials)経由で呼ぶ。
+        get("/api/organizations") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val organizations = listOrganizations(httpClient)
+            if (organizations == null) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "organization list unavailable"))
+            } else {
+                call.respond(organizations)
+            }
+        }
+
+        post("/api/organizations") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val request = try {
+                call.receive<CreateOrganizationRequest>()
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                return@post
+            }
+            call.respond(createOrganization(httpClient, request))
+        }
+
+        delete("/api/organizations/{id}") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@delete
+            }
+            val orgId = call.parameters["id"]
+            if (orgId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
+                return@delete
+            }
+            call.respond(deleteOrganization(httpClient, orgId))
+        }
+
+        get("/api/organizations/{id}/members") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val orgId = call.parameters["id"]
+            if (orgId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
+                return@get
+            }
+            val members = listOrganizationMembers(httpClient, orgId)
+            if (members == null) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "member list unavailable"))
+            } else {
+                call.respond(members)
+            }
+        }
+
+        post("/api/organizations/{id}/members") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val orgId = call.parameters["id"]
+            if (orgId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
+                return@post
+            }
+            val request = try {
+                call.receive<AddOrganizationMemberRequest>()
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                return@post
+            }
+            call.respond(addOrganizationMember(httpClient, orgId, request.userId))
+        }
+
+        delete("/api/organizations/{id}/members/{userId}") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@delete
+            }
+            val orgId = call.parameters["id"]
+            val userId = call.parameters["userId"]
+            if (orgId.isNullOrBlank() || userId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id or user id"))
+                return@delete
+            }
+            call.respond(removeOrganizationMember(httpClient, orgId, userId))
+        }
+
+        get("/api/organizations/users") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val query = call.request.queryParameters["query"]
+            if (query.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing query"))
+                return@get
+            }
+            val users = searchKigawaNetUsers(httpClient, query)
+            if (users == null) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "user search unavailable"))
+            } else {
+                call.respond(users)
+            }
+        }
+
         // GitHub App (kigawa-net, app_id 4316503) operation: mint scoped installation tokens
         // in place of the long-lived org PAT. Admin-only, since a minted token can act with up
         // to the App's full contents:write permission.
