@@ -8,10 +8,8 @@ spec:
   authToken:
     secretName: bitwarden-sec
     secretKey: token
-  # ci-token は kigawa-net/infra の platform/admin-panel モジュール(ci-tokenをランダム
-  # 生成しBitwardenに格納するTerraform)適用後、出力されたBWS secret IDが分かってから
-  # 追加する(不正なIDを1つでも含めると同期全体が失敗するリスクがあるため、先に
-  # private-keyだけ追加する)。
   map:
     - bwSecretId: "97b6eba7-6bd2-418d-9d64-b48a007a097a" # kigawa-net-private-key
       secretKeyName: private-key
+    - bwSecretId: "8a261bc3-cbfb-4e27-958e-b48d00ac0887" # admin-panel-github-app-ci-token (kigawa-net/infra platform/admin-panel)
+      secretKeyName: ci-token
