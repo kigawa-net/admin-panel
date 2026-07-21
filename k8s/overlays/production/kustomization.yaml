@@ -14,4 +14,5 @@ images:
 
 patches:
   - path: replica-patch.yaml
+  - path: api-replica-patch.yaml
   - path: ingress-tls-patch.yaml
