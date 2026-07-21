@@ -35,6 +35,8 @@ object NodeSshOperations {
         }
 
         return try {
+            var exitStatus: Int? = null
+            var errorOutput = ""
             SSHClient().use { client ->
                 client.addHostKeyVerifier(PromiscuousVerifier())
                 client.connectTimeout = CONNECT_TIMEOUT_MS
@@ -43,18 +45,32 @@ object NodeSshOperations {
                 client.authPublickey(sshUser, keyProvider)
 
                 client.startSession().use { session ->
-                    // sudo -S でパスワードを標準入力から読ませる。シャットダウン/再起動コマンドは
-                    // 実行後にSSHコネクション自体が切れる(または応答が返らない)ため、
-                    // 接続断自体は失敗とみなさない。
+                    // sudoが`requiretty`設定でTTY無しの実行を拒否する環境があるため、
+                    // execの前にPTYを割り当てる(無害なので常に行う)。
+                    session.allocatePTY("vt100", 80, 24, 0, 0, emptyMap())
+
+                    // sudo -S でパスワードを標準入力から読ませる。シャットダウン/再起動コマンドが
+                    // 実際に電源を落とした場合はSSHコネクション自体が切れて応答が返らないため、
+                    // その場合(exitStatusが取得できない場合)は失敗とみなさない。
                     val cmd = session.exec("echo '${escapeForSingleQuotedShell(password)}' | sudo -S $command")
                     try {
                         cmd.join(COMMAND_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
                     } catch (e: Exception) {
                         // 接続が切れて応答を待てない場合も、コマンド自体は発行済みとして成功扱いにする
                     }
+                    exitStatus = cmd.exitStatus
+                    if (exitStatus != null && exitStatus != 0) {
+                        errorOutput = cmd.errorStream.bufferedReader().readText().trim()
+                    }
                 }
             }
-            ActionResultDto(true, successMessage)
+            when (exitStatus) {
+                null, 0 -> ActionResultDto(true, successMessage)
+                else -> ActionResultDto(
+                    false,
+                    "コマンドが失敗しました (exit $exitStatus)${if (errorOutput.isNotBlank()) ": $errorOutput" else ""}"
+                )
+            }
         } catch (e: Exception) {
             ActionResultDto(false, e.message ?: "SSH実行に失敗しました")
         }
