@@ -26,6 +26,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import net.kigawa.admin.common.ErrorStateWithRetry
 import org.jetbrains.compose.web.css.Color
 import org.jetbrains.compose.web.css.px
 import org.jetbrains.compose.web.css.rgba
@@ -117,7 +118,7 @@ fun UserManagementPage(accessToken: String, onBack: () -> Unit) {
 
             when (val current = state) {
                 is UserListUiState.Loading -> SpanText("読み込み中...")
-                is UserListUiState.Error -> SpanText(current.message, modifier = Modifier.color(Colors.Red))
+                is UserListUiState.Error -> ErrorStateWithRetry(current.message, onRetry = { refreshKey++ })
                 is UserListUiState.Loaded -> current.users.forEach { user ->
                     UserCard(
                         user = user,

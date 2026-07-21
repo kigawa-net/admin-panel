@@ -26,6 +26,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import net.kigawa.admin.common.ErrorStateWithRetry
 import org.jetbrains.compose.web.css.Color
 import org.jetbrains.compose.web.css.px
 import org.jetbrains.compose.web.css.rgba
@@ -128,7 +129,7 @@ fun OrganizationPage(accessToken: String, onBack: () -> Unit) {
 
             when (val current = state) {
                 is OrganizationListUiState.Loading -> SpanText("読み込み中...")
-                is OrganizationListUiState.Error -> SpanText(current.message, modifier = Modifier.color(Colors.Red))
+                is OrganizationListUiState.Error -> ErrorStateWithRetry(current.message, onRetry = { refreshKey++ })
                 is OrganizationListUiState.Loaded -> current.organizations.forEach { org ->
                     OrganizationCard(
                         organization = org,
@@ -304,7 +305,7 @@ private fun OrganizationMembersPage(accessToken: String, organization: Organizat
 
             when (val current = state) {
                 is OrganizationMembersUiState.Loading -> SpanText("読み込み中...")
-                is OrganizationMembersUiState.Error -> SpanText(current.message, modifier = Modifier.color(Colors.Red))
+                is OrganizationMembersUiState.Error -> ErrorStateWithRetry(current.message, onRetry = { refreshKey++ })
                 is OrganizationMembersUiState.Loaded -> current.members.forEach { member ->
                     Row(
                         modifier = Modifier
