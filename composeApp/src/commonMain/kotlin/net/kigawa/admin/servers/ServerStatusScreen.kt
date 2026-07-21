@@ -20,6 +20,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,12 +51,18 @@ private data class PendingConfirmation(
     val onConfirm: suspend () -> Unit
 )
 
+private data class PendingShutdownAction(
+    val server: ServerStatus,
+    val reboot: Boolean
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ServerStatusScreen(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<ServerStatusUiState>(ServerStatusUiState.Loading) }
     var refreshKey by remember { mutableStateOf(0) }
     var pendingConfirmation by remember { mutableStateOf<PendingConfirmation?>(null) }
+    var pendingShutdownAction by remember { mutableStateOf<PendingShutdownAction?>(null) }
     var podListNode by remember { mutableStateOf<ServerStatus?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     val httpClient = remember { createHttpClient() }
@@ -155,7 +162,9 @@ fun ServerStatusScreen(accessToken: String, onBack: () -> Unit) {
                                         }
                                     )
                                 },
-                                onShowPods = { podListNode = server }
+                                onShowPods = { podListNode = server },
+                                onShutdown = { pendingShutdownAction = PendingShutdownAction(server, reboot = false) },
+                                onReboot = { pendingShutdownAction = PendingShutdownAction(server, reboot = true) }
                             )
                         }
                     }
@@ -202,6 +211,24 @@ fun ServerStatusScreen(accessToken: String, onBack: () -> Unit) {
                     }
                 )
             }
+
+            pendingShutdownAction?.let { action ->
+                ShutdownConfirmDialog(
+                    server = action.server,
+                    reboot = action.reboot,
+                    onDismiss = { pendingShutdownAction = null },
+                    onConfirm = { timeoutSeconds ->
+                        pendingShutdownAction = null
+                        runAction {
+                            if (action.reboot) {
+                                gracefulRebootNode(httpClient, accessToken, action.server.id, timeoutSeconds)
+                            } else {
+                                gracefulShutdownNode(httpClient, accessToken, action.server.id, timeoutSeconds)
+                            }
+                        }
+                    }
+                )
+            }
         }
     }
 }
@@ -212,7 +239,9 @@ private fun ServerCard(
     onCordon: () -> Unit,
     onUncordon: () -> Unit,
     onDrain: () -> Unit,
-    onShowPods: () -> Unit
+    onShowPods: () -> Unit,
+    onShutdown: () -> Unit,
+    onReboot: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -253,8 +282,62 @@ private fun ServerCard(
                 OutlinedButton(onClick = onDrain) { Text("Drain") }
                 OutlinedButton(onClick = onShowPods) { Text("Pod一覧") }
             }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(onClick = onShutdown) {
+                    Text("シャットダウン", color = MaterialTheme.colorScheme.error)
+                }
+                OutlinedButton(onClick = onReboot) {
+                    Text("再起動", color = MaterialTheme.colorScheme.error)
+                }
+            }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ShutdownConfirmDialog(
+    server: ServerStatus,
+    reboot: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (drainTimeoutSeconds: Int) -> Unit
+) {
+    var timeoutText by remember { mutableStateOf("60") }
+    val actionLabel = if (reboot) "再起動" else "シャットダウン"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${server.name} を${actionLabel}しますか?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Cordon・Drainを行った上で、ノードの電源を実際に操作します。元に戻せません。")
+                if (server.role == "CONTROL_PLANE") {
+                    Text(
+                        "⚠ このノードはコントロールプレーンです。${actionLabel}するとクラスタ全体の管理機能に影響する可能性があります。",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                OutlinedTextField(
+                    value = timeoutText,
+                    onValueChange = { timeoutText = it.filter { c -> c.isDigit() } },
+                    label = { Text("Pod退避の最大待機時間(秒)") },
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(timeoutText.toIntOrNull() ?: 60) }) {
+                Text("${actionLabel}する", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("キャンセル") }
+        }
+    )
 }
 
 @Composable

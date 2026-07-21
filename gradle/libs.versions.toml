@@ -11,6 +11,7 @@ androidx-activityCompose = "1.9.3"
 kotlinx-coroutines = "1.9.0"
 kotlinx-serialization = "1.7.3"
 logback = "1.5.12"
+sshj = "0.38.0"
 
 [libraries]
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
@@ -29,6 +30,7 @@ kobweb-core = { module = "com.varabyte.kobweb:kobweb-core", version.ref = "kobwe
 kobweb-silk = { module = "com.varabyte.kobweb:kobweb-silk", version.ref = "kobweb" }
 silk-icons-fa = { module = "com.varabyte.kobwebx:silk-icons-fa", version.ref = "kobweb" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }
 
 [plugins]
 kotlinJvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

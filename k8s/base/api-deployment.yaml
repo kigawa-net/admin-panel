@@ -87,6 +87,23 @@ spec:
                   name: admin-panel-github-app
                   key: ci-token
                   optional: true
+            # サーバー管理画面のシャットダウン/再起動機能が使う、ノード(物理/VMホスト)への
+            # SSHログイン用鍵とsudoパスワード。kigawa-net/infra hardware配下の各ノードの
+            # Terraformが使っているのと同じBitwarden secretを再利用している(ssh_key_
+            # bitwarden_id / sudo_password_bitwarden_id)。未設定の間はシャットダウン/
+            # 再起動エンドポイントが失敗を返すのみで、他機能には影響しない。
+            - name: NODE_SSH_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-node-ssh
+                  key: private-key
+                  optional: true
+            - name: NODE_SSH_SUDO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-node-ssh
+                  key: sudo-password
+                  optional: true
           resources:
             requests:
               cpu: 50m

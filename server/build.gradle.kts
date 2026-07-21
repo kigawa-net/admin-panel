@@ -19,6 +19,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.logback.classic)
+    implementation(libs.sshj)
 
     testImplementation(kotlin("test"))
 }

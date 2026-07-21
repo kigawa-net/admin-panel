@@ -9,3 +9,4 @@ resources:
   - api-rbac.yaml
   - ingress.yaml
   - github-app-bws.yaml
+  - node-ssh-bws.yaml

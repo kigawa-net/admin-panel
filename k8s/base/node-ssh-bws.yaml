@@ -1,0 +1,17 @@
+apiVersion: k8s.bitwarden.com/v1
+kind: BitwardenSecret
+metadata:
+  name: admin-panel-node-ssh-bws
+spec:
+  organizationId: "a2b57f3d-6e2b-4467-b499-b31e00bfd804"
+  secretName: admin-panel-node-ssh
+  authToken:
+    secretName: bitwarden-sec
+    secretKey: token
+  map:
+    # kigawa-net/infra hardware配下の各ノードのTerraformが使っているのと同じSSH鍵・
+    # sudoパスワード(ssh_key_bitwarden_id / sudo_password_bitwarden_id)を再利用する。
+    - bwSecretId: "0393671f-6ef0-4650-be98-b364013f8644" # ssh private key (kigawa user)
+      secretKeyName: private-key
+    - bwSecretId: "52b44d60-7cab-429f-929a-b4340139b6d8" # sudo password
+      secretKeyName: sudo-password
