@@ -10,16 +10,19 @@ on:
 jobs:
   build-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      # TEMPORARY bootstrap: admin.kigawa.net is still running the image built before
-      # /api/github-app/ci-token existed (#46), so every build since #44 switched to the
-      # GitHub App token flow has failed at this exact step trying to call an endpoint
-      # that isn't live yet — a deploy deadlock. Using GIT_TOKEN for one deploy cycle gets
-      # the new endpoint live; revert to the kigawa-net-app-token flow right after (#41).
+      # 同一リポジトリへのcheckout+pushのみが目的で、他リポジトリへのアクセスは不要なため、
+      # 標準のGITHUB_TOKEN(contents: write権限を付与済み)を使う。GitHub Appのインストール
+      # トークンは、複数リポジトリ共有の長期PATを置き換えるためのものであり、この用途には
+      # 元々不要だった。admin-panel-api自体がまだ/api/github-app/ci-tokenエンドポイントを
+      # 提供していない状態でこのステップが動くと、そのエンドポイントを持つ新しいイメージを
+      # ビルドするために新しいイメージ自身が必要になる循環依存が生じるため、この経路では
+      # App認証を使わない。
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GIT_TOKEN }}
+
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
