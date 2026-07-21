@@ -1,11 +1,10 @@
 package net.kigawa.admin.pages
 
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import com.varabyte.kobweb.compose.css.Cursor
 import com.varabyte.kobweb.compose.css.FontSize
 import com.varabyte.kobweb.compose.css.FontWeight
 import com.varabyte.kobweb.compose.foundation.layout.Arrangement
-import com.varabyte.kobweb.compose.foundation.layout.Box
 import com.varabyte.kobweb.compose.foundation.layout.Column
 import com.varabyte.kobweb.compose.foundation.layout.Row
 import com.varabyte.kobweb.compose.ui.Alignment
@@ -13,185 +12,28 @@ import com.varabyte.kobweb.compose.ui.Modifier
 import com.varabyte.kobweb.compose.ui.modifiers.*
 import com.varabyte.kobweb.core.Page
 import com.varabyte.kobweb.compose.ui.graphics.Colors
+import com.varabyte.kobweb.core.rememberPageContext
 import com.varabyte.kobweb.silk.components.forms.Button
 import com.varabyte.kobweb.silk.components.text.SpanText
-import kotlinx.browser.window
-import kotlinx.coroutines.launch
-import net.kigawa.admin.auth.AuthState
-import net.kigawa.admin.auth.KeycloakAuthProvider
+import net.kigawa.admin.auth.AuthGuard
 import net.kigawa.admin.auth.KeycloakRealm
-import net.kigawa.admin.githubapp.GithubAppPage
-import net.kigawa.admin.networkmap.NetworkMapPage
-import net.kigawa.admin.organizations.OrganizationPage
-import net.kigawa.admin.servers.ServerStatusPage
-import net.kigawa.admin.users.UserManagementPage
-import net.kigawa.admin.util.URLSearchParams
 import org.jetbrains.compose.web.css.*
-
-private sealed class AppScreen {
-    object Dashboard : AppScreen()
-    object NetworkMap : AppScreen()
-    object Servers : AppScreen()
-    object Users : AppScreen()
-    object Organizations : AppScreen()
-    object GithubApp : AppScreen()
-}
 
 @Page
 @Composable
 fun HomePage() {
-    val authProvider = remember { KeycloakAuthProvider() }
-    val authState by authProvider.authState.collectAsState()
-    val scope = rememberCoroutineScope()
-    var currentScreen by remember { mutableStateOf<AppScreen>(AppScreen.Dashboard) }
-
-    val urlError = remember {
-        URLSearchParams(window.location.search).get("error")
-    }
-
-    DisposableEffect(authProvider) {
-        authProvider.init()
-        if (urlError != null) authProvider.setError(urlError)
-        onDispose { authProvider.close() }
-    }
-
-    when (val state = authState) {
-        is AuthState.Unauthenticated -> Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            LoginPage(onLogin = { realm -> scope.launch { authProvider.startLogin(realm) } })
-        }
-        is AuthState.Loading -> Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            LoginPage(isLoading = true, onLogin = {})
-        }
-        is AuthState.Authenticated -> {
-            val isAdmin = state.realm == KeycloakRealm.ADMIN
-            when (currentScreen) {
-                AppScreen.Dashboard -> DashboardPage(
-                    username = state.username,
-                    isAdmin = isAdmin,
-                    onLogout = { authProvider.logout() },
-                    onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
-                    onOpenServers = { currentScreen = AppScreen.Servers },
-                    onOpenUsers = { currentScreen = AppScreen.Users },
-                    onOpenOrganizations = { currentScreen = AppScreen.Organizations },
-                    onOpenGithubApp = { currentScreen = AppScreen.GithubApp }
-                )
-                AppScreen.NetworkMap -> NetworkMapPage(
-                    accessToken = state.accessToken,
-                    onBack = { currentScreen = AppScreen.Dashboard }
-                )
-                AppScreen.Servers -> if (isAdmin) {
-                    ServerStatusPage(
-                        accessToken = state.accessToken,
-                        onBack = { currentScreen = AppScreen.Dashboard }
-                    )
-                } else {
-                    currentScreen = AppScreen.Dashboard
-                }
-                AppScreen.Users -> if (isAdmin) {
-                    UserManagementPage(
-                        accessToken = state.accessToken,
-                        onBack = { currentScreen = AppScreen.Dashboard }
-                    )
-                } else {
-                    currentScreen = AppScreen.Dashboard
-                }
-                AppScreen.Organizations -> if (isAdmin) {
-                    OrganizationPage(
-                        accessToken = state.accessToken,
-                        onBack = { currentScreen = AppScreen.Dashboard }
-                    )
-                } else {
-                    currentScreen = AppScreen.Dashboard
-                }
-                AppScreen.GithubApp -> if (isAdmin) {
-                    GithubAppPage(
-                        accessToken = state.accessToken,
-                        onBack = { currentScreen = AppScreen.Dashboard }
-                    )
-                } else {
-                    currentScreen = AppScreen.Dashboard
-                }
-            }
-        }
-        is AuthState.Error -> Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            LoginPage(
-                error = state.message,
-                onLogin = { realm -> scope.launch { authProvider.startLogin(realm) } }
-            )
-        }
-    }
-}
-
-@Composable
-private fun LoginPage(
-    isLoading: Boolean = false,
-    error: String? = null,
-    onLogin: (KeycloakRealm) -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .width(400.px)
-            .padding(16.px)
-            .backgroundColor(Colors.White)
-            .borderRadius(12.px)
-            .boxShadow(offsetX = 0.px, offsetY = 4.px, blurRadius = 16.px, color = rgba(0, 0, 0, 0.1)),
-        contentAlignment = Alignment.TopCenter
-    ) {
-        Column(
-            modifier = Modifier
-                .padding(32.px)
-                .fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.px)
-        ) {
-            SpanText(
-                "Admin Panel",
-                modifier = Modifier
-                    .fontSize(FontSize.XXLarge)
-                    .fontWeight(FontWeight.Bold)
-            )
-
-            SpanText(
-                "Sign in with Keycloak",
-                modifier = Modifier
-                    .fontSize(FontSize.Medium)
-                    .color(Colors.Gray)
-            )
-
-            if (error != null) {
-                SpanText(
-                    error,
-                    modifier = Modifier
-                        .color(Colors.Red)
-                        .fontSize(FontSize.Small)
-                )
-            }
-
-            Button(
-                onClick = { if (!isLoading) onLogin(KeycloakRealm.ADMIN) },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading
-            ) {
-                SpanText(if (isLoading) "Signing in..." else "管理者としてログイン")
-            }
-
-            Button(
-                onClick = { if (!isLoading) onLogin(KeycloakRealm.PUBLIC) },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading
-            ) {
-                SpanText("一般利用者としてログイン")
-            }
-        }
+    val ctx = rememberPageContext()
+    AuthGuard { state, logout ->
+        DashboardPage(
+            username = state.username,
+            isAdmin = state.realm == KeycloakRealm.ADMIN,
+            onLogout = logout,
+            onOpenNetworkMap = { ctx.router.navigateTo("/network-map") },
+            onOpenServers = { ctx.router.navigateTo("/servers") },
+            onOpenUsers = { ctx.router.navigateTo("/users") },
+            onOpenOrganizations = { ctx.router.navigateTo("/organizations") },
+            onOpenGithubApp = { ctx.router.navigateTo("/github-app") }
+        )
     }
 }
 
