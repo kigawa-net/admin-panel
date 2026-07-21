@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.createHttpClient
+import net.kigawa.admin.common.ErrorStateWithRetry
 
 private sealed class OrganizationListUiState {
     object Loading : OrganizationListUiState()
@@ -113,10 +114,10 @@ fun OrganizationScreen(accessToken: String, onBack: () -> Unit) {
         Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
             when (val current = state) {
                 is OrganizationListUiState.Loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                is OrganizationListUiState.Error -> Text(
-                    text = current.message,
-                    modifier = Modifier.align(Alignment.Center).padding(16.dp),
-                    color = MaterialTheme.colorScheme.error
+                is OrganizationListUiState.Error -> ErrorStateWithRetry(
+                    message = current.message,
+                    onRetry = { refreshKey++ },
+                    modifier = Modifier.align(Alignment.Center).padding(16.dp)
                 )
                 is OrganizationListUiState.Loaded -> Column(modifier = Modifier.fillMaxSize()) {
                     statusMessage?.let { message ->
@@ -316,10 +317,10 @@ private fun OrganizationMembersScreen(accessToken: String, organization: Organiz
         Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
             when (val current = state) {
                 is OrganizationMembersUiState.Loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                is OrganizationMembersUiState.Error -> Text(
-                    text = current.message,
-                    modifier = Modifier.align(Alignment.Center).padding(16.dp),
-                    color = MaterialTheme.colorScheme.error
+                is OrganizationMembersUiState.Error -> ErrorStateWithRetry(
+                    message = current.message,
+                    onRetry = { refreshKey++ },
+                    modifier = Modifier.align(Alignment.Center).padding(16.dp)
                 )
                 is OrganizationMembersUiState.Loaded -> Column(modifier = Modifier.fillMaxSize()) {
                     statusMessage?.let { message ->

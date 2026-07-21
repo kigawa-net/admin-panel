@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import net.kigawa.admin.auth.createHttpClient
+import net.kigawa.admin.common.ErrorStateWithRetry
 
 private sealed class UserListUiState {
     object Loading : UserListUiState()
@@ -104,10 +105,10 @@ fun UserManagementScreen(accessToken: String, onBack: () -> Unit) {
         Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
             when (val current = state) {
                 is UserListUiState.Loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                is UserListUiState.Error -> Text(
-                    text = current.message,
-                    modifier = Modifier.align(Alignment.Center).padding(16.dp),
-                    color = MaterialTheme.colorScheme.error
+                is UserListUiState.Error -> ErrorStateWithRetry(
+                    message = current.message,
+                    onRetry = { refreshKey++ },
+                    modifier = Modifier.align(Alignment.Center).padding(16.dp)
                 )
                 is UserListUiState.Loaded -> Column(modifier = Modifier.fillMaxSize()) {
                     statusMessage?.let { message ->

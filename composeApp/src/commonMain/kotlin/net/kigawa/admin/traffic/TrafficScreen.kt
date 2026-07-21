@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import net.kigawa.admin.auth.createHttpClient
+import net.kigawa.admin.common.ErrorStateWithRetry
 
 private sealed class TrafficUiState {
     object Loading : TrafficUiState()
@@ -37,9 +38,10 @@ private sealed class TrafficUiState {
 @Composable
 fun TrafficScreen(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<TrafficUiState>(TrafficUiState.Loading) }
+    var refreshKey by remember { mutableStateOf(0) }
     val httpClient = remember { createHttpClient() }
 
-    LaunchedEffect(accessToken) {
+    LaunchedEffect(accessToken, refreshKey) {
         state = try {
             TrafficUiState.Loaded(fetchTraffic(httpClient, accessToken))
         } catch (e: Exception) {
@@ -65,9 +67,9 @@ fun TrafficScreen(accessToken: String, onBack: () -> Unit) {
         ) {
             when (val current = state) {
                 is TrafficUiState.Loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                is TrafficUiState.Error -> Text(
-                    text = current.message,
-                    color = MaterialTheme.colorScheme.error
+                is TrafficUiState.Error -> ErrorStateWithRetry(
+                    message = current.message,
+                    onRetry = { refreshKey++ }
                 )
                 is TrafficUiState.Loaded -> {
                     Card(modifier = Modifier.fillMaxSize()) {

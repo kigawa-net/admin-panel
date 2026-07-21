@@ -24,6 +24,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import net.kigawa.admin.common.ErrorStateWithRetry
 import org.jetbrains.compose.web.attributes.InputType
 import org.jetbrains.compose.web.attributes.placeholder
 import org.jetbrains.compose.web.dom.Input
@@ -41,6 +42,7 @@ private sealed class GithubAppUiState {
 @Composable
 fun GithubAppPage(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<GithubAppUiState>(GithubAppUiState.Loading) }
+    var refreshKey by remember { mutableStateOf(0) }
     val httpClient = remember {
         HttpClient(Js) {
             install(ContentNegotiation) {
@@ -49,7 +51,7 @@ fun GithubAppPage(accessToken: String, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(accessToken) {
+    LaunchedEffect(accessToken, refreshKey) {
         state = try {
             GithubAppUiState.Loaded(fetchGithubInstallations(httpClient, accessToken))
         } catch (e: Exception) {
@@ -86,7 +88,7 @@ fun GithubAppPage(accessToken: String, onBack: () -> Unit) {
         ) {
             when (val current = state) {
                 is GithubAppUiState.Loading -> SpanText("読み込み中...")
-                is GithubAppUiState.Error -> SpanText(current.message, modifier = Modifier.color(Colors.Red))
+                is GithubAppUiState.Error -> ErrorStateWithRetry(current.message, onRetry = { refreshKey++ })
                 is GithubAppUiState.Loaded -> if (current.installations.isEmpty()) {
                     SpanText("インストール済みのGitHub Appがありません")
                 } else {
