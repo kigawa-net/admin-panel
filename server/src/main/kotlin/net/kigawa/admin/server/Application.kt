@@ -212,6 +212,51 @@ fun Application.module() {
             call.respond(drainNode(nodeName))
         }
 
+        // ノード自体の電源操作(SSH経由)。Cordon/Drainを行った上で、実際にシャットダウン/
+        // 再起動する。drainTimeoutSecondsの間だけPodの退避完了を待ち、タイムアウトしても
+        // 処理は続行する(無限に待たない)。
+        post("/api/servers/{name}/graceful-shutdown") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@post
+            }
+            val request = try {
+                call.receive<GracefulShutdownRequestDto>()
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                return@post
+            }
+            val timeout = request.drainTimeoutSeconds.coerceIn(0, 1800)
+            call.respond(gracefulNodeShutdown(nodeName, timeout, reboot = false))
+        }
+
+        post("/api/servers/{name}/graceful-reboot") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@post
+            }
+            val nodeName = call.parameters["name"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@post
+            }
+            val request = try {
+                call.receive<GracefulShutdownRequestDto>()
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                return@post
+            }
+            val timeout = request.drainTimeoutSeconds.coerceIn(0, 1800)
+            call.respond(gracefulNodeShutdown(nodeName, timeout, reboot = true))
+        }
+
         delete("/api/pods/{namespace}/{name}") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
             if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {

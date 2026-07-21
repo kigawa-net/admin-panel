@@ -34,6 +34,9 @@ data class PodList(val pods: List<PodSummary>)
 data class ActionResult(val success: Boolean, val message: String)
 
 @Serializable
+data class GracefulShutdownRequest(val drainTimeoutSeconds: Int = 60)
+
+@Serializable
 data class DrainResult(
     val evicted: Int,
     val skipped: Int,

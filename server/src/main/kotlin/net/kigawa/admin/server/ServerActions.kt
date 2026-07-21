@@ -13,6 +13,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -27,6 +28,9 @@ data class PodListDto(val pods: List<PodSummaryDto>)
 
 @Serializable
 data class ActionResultDto(val success: Boolean, val message: String)
+
+@Serializable
+data class GracefulShutdownRequestDto(val drainTimeoutSeconds: Int = 60)
 
 @Serializable
 data class DrainResultDto(
@@ -168,6 +172,76 @@ suspend fun drainNode(nodeName: String): DrainResultDto {
         DrainResultDto(evicted, skipped, failed, errors)
     } catch (e: Exception) {
         DrainResultDto(0, 0, 1, listOf(e.message ?: "失敗しました"))
+    } finally {
+        client.close()
+    }
+}
+
+/** ノードのInternalIPを取得する。SSH経由での電源操作(NodeSshOperations)の接続先として使う。 */
+internal suspend fun getNodeInternalIp(nodeName: String): String? {
+    val apiServerUrl = inClusterApiServerUrl() ?: return null
+    val token = readServiceAccountToken() ?: return null
+    val client = buildKubernetesHttpClient() ?: return null
+
+    return try {
+        val node = client.get("$apiServerUrl/api/v1/nodes/$nodeName") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+        }.body<K8sNode>()
+        node.status.addresses.firstOrNull { it.type == "InternalIP" }?.address
+    } catch (e: Exception) {
+        null
+    } finally {
+        client.close()
+    }
+}
+
+/**
+ * Cordon → Drain(Eviction発行)→ 対象ノード上の非DaemonSet Podが実際に無くなるまで
+ * 最大drainTimeoutSeconds秒だけ待つ → SSH経由で実際にシャットダウン/再起動する。
+ * タイムアウトに達した場合もPodの残存有無に関わらず処理を続行する(#50: 無限に待たない)。
+ */
+suspend fun gracefulNodeShutdown(nodeName: String, drainTimeoutSeconds: Int, reboot: Boolean): ActionResultDto {
+    if (!NodeSshOperations.isConfigured) {
+        return ActionResultDto(false, "ノードSSHの認証情報が未設定です")
+    }
+
+    val hostIp = getNodeInternalIp(nodeName)
+        ?: return ActionResultDto(false, "ノードのIPアドレスを取得できませんでした")
+
+    val drainResult = drainNode(nodeName)
+    if (drainResult.failed > 0 && drainResult.evicted == 0 && drainResult.skipped == 0) {
+        // cordon自体が失敗した場合など、evictionが一件も発行できていない場合は中断する
+        return ActionResultDto(false, "Drainに失敗しました: ${drainResult.errors.joinToString()}")
+    }
+
+    waitForDrainCompletion(nodeName, drainTimeoutSeconds)
+
+    return if (reboot) NodeSshOperations.reboot(hostIp) else NodeSshOperations.shutdown(hostIp)
+}
+
+private const val DRAIN_POLL_INTERVAL_MS = 3_000L
+
+private suspend fun waitForDrainCompletion(nodeName: String, timeoutSeconds: Int) {
+    if (timeoutSeconds <= 0) return
+    val apiServerUrl = inClusterApiServerUrl() ?: return
+    val token = readServiceAccountToken() ?: return
+    val client = buildKubernetesHttpClient() ?: return
+
+    try {
+        val deadline = System.currentTimeMillis() + timeoutSeconds * 1000L
+        while (System.currentTimeMillis() < deadline) {
+            val remaining = try {
+                client.get("$apiServerUrl/api/v1/pods") {
+                    header(HttpHeaders.Authorization, "Bearer $token")
+                }.body<K8sPodList>().items.count {
+                    it.spec.nodeName == nodeName && it.metadata.ownerReferences.firstOrNull()?.kind != "DaemonSet"
+                }
+            } catch (e: Exception) {
+                0
+            }
+            if (remaining == 0) return
+            delay(DRAIN_POLL_INTERVAL_MS)
+        }
     } finally {
         client.close()
     }

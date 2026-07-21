@@ -139,12 +139,40 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
                             if (window.confirm("${pod.namespace}/${pod.name} を再起動(削除)しますか?")) {
                                 runAction { deletePod(httpClient, accessToken, pod.namespace, pod.name) }
                             }
+                        },
+                        onShutdown = {
+                            promptDrainTimeoutAndConfirm(server, actionLabel = "シャットダウン")?.let { timeout ->
+                                runAction { gracefulShutdownNode(httpClient, accessToken, server.id, timeout) }
+                            }
+                        },
+                        onReboot = {
+                            promptDrainTimeoutAndConfirm(server, actionLabel = "再起動")?.let { timeout ->
+                                runAction { gracefulRebootNode(httpClient, accessToken, server.id, timeout) }
+                            }
                         }
                     )
                 }
             }
         }
     }
+}
+
+/**
+ * タイムアウト値の入力(prompt)→最終確認(confirm)の2段階。どちらかでキャンセルすればnullを返す。
+ */
+private fun promptDrainTimeoutAndConfirm(server: ServerStatus, actionLabel: String): Int? {
+    val input = window.prompt("${server.name} を${actionLabel}します。Pod退避の最大待機時間(秒)を入力してください。", "60")
+        ?: return null
+    val timeout = input.toIntOrNull() ?: 60
+    val warning = if (server.role == "CONTROL_PLANE") {
+        "\n⚠ このノードはコントロールプレーンです。${actionLabel}するとクラスタ全体の管理機能に影響する可能性があります。"
+    } else {
+        ""
+    }
+    val confirmed = window.confirm(
+        "${server.name} を本当に${actionLabel}しますか?Cordon・Drainを行った上で電源を操作します。元に戻せません。$warning"
+    )
+    return if (confirmed) timeout else null
 }
 
 @Composable
@@ -155,7 +183,9 @@ private fun ServerCard(
     onCordon: () -> Unit,
     onUncordon: () -> Unit,
     onDrain: () -> Unit,
-    onDeletePod: (PodSummary) -> Unit
+    onDeletePod: (PodSummary) -> Unit,
+    onShutdown: () -> Unit,
+    onReboot: () -> Unit
 ) {
     var showPods by remember { mutableStateOf(false) }
     var pods by remember { mutableStateOf<List<PodSummary>?>(null) }
@@ -215,6 +245,18 @@ private fun ServerCard(
             }
             Button(onClick = { onDrain() }) { SpanText("Drain") }
             Button(onClick = { showPods = !showPods }) { SpanText(if (showPods) "Podを隠す" else "Pod一覧") }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.px),
+            horizontalArrangement = Arrangement.spacedBy(8.px)
+        ) {
+            Button(onClick = { onShutdown() }) {
+                SpanText("シャットダウン", modifier = Modifier.color(Color("#E34948")))
+            }
+            Button(onClick = { onReboot() }) {
+                SpanText("再起動", modifier = Modifier.color(Color("#E34948")))
+            }
         }
 
         if (showPods) {
