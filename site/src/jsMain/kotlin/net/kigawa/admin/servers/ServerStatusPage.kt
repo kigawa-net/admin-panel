@@ -23,6 +23,7 @@ import io.ktor.client.engine.js.Js
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.browser.window
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import net.kigawa.admin.common.ErrorStateWithRetry
@@ -36,11 +37,16 @@ private sealed class ServerStatusUiState {
     data class Error(val message: String) : ServerStatusUiState()
 }
 
+private enum class PendingOperation { REBOOTING, SHUTTING_DOWN }
+
+private const val PENDING_OPERATION_POLL_INTERVAL_MS = 5000L
+
 @Composable
 fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<ServerStatusUiState>(ServerStatusUiState.Loading) }
     var refreshKey by remember { mutableStateOf(0) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+    var pendingOperations by remember { mutableStateOf<Map<String, PendingOperation>>(emptyMap()) }
     val httpClient = remember {
         HttpClient(Js) {
             install(ContentNegotiation) {
@@ -50,11 +56,44 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
     }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(accessToken, refreshKey) {
+    suspend fun refresh() {
         state = try {
-            ServerStatusUiState.Loaded(fetchServerStatuses(httpClient, accessToken).servers)
+            val servers = fetchServerStatuses(httpClient, accessToken).servers
+            val stillPending = mutableMapOf<String, PendingOperation>()
+            pendingOperations.forEach { (nodeId, op) ->
+                val server = servers.find { it.id == nodeId }
+                val resolved = server == null || when (op) {
+                    PendingOperation.REBOOTING -> server.ready
+                    PendingOperation.SHUTTING_DOWN -> !server.ready
+                }
+                if (resolved) {
+                    if (server != null) {
+                        statusMessage = when (op) {
+                            PendingOperation.REBOOTING -> "${server.name} の再起動が完了しました"
+                            PendingOperation.SHUTTING_DOWN -> "${server.name} のシャットダウンが完了しました"
+                        }
+                    }
+                } else {
+                    stillPending[nodeId] = op
+                }
+            }
+            pendingOperations = stillPending
+            ServerStatusUiState.Loaded(servers)
         } catch (e: Exception) {
             ServerStatusUiState.Error("サーバー状態を取得できませんでした")
+        }
+    }
+
+    LaunchedEffect(accessToken, refreshKey) {
+        refresh()
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(PENDING_OPERATION_POLL_INTERVAL_MS)
+            if (pendingOperations.isNotEmpty()) {
+                refresh()
+            }
         }
     }
 
@@ -107,6 +146,7 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
                 is ServerStatusUiState.Loaded -> current.servers.forEach { server ->
                     ServerCard(
                         server = server,
+                        pendingOperation = pendingOperations[server.id],
                         httpClient = httpClient,
                         accessToken = accessToken,
                         onCordon = {
@@ -143,12 +183,24 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
                         },
                         onShutdown = {
                             promptDrainTimeoutAndConfirm(server, actionLabel = "シャットダウン")?.let { timeout ->
-                                runAction { gracefulShutdownNode(httpClient, accessToken, server.id, timeout) }
+                                runAction {
+                                    val result = gracefulShutdownNode(httpClient, accessToken, server.id, timeout)
+                                    if (result.success) {
+                                        pendingOperations = pendingOperations + (server.id to PendingOperation.SHUTTING_DOWN)
+                                    }
+                                    result
+                                }
                             }
                         },
                         onReboot = {
                             promptDrainTimeoutAndConfirm(server, actionLabel = "再起動")?.let { timeout ->
-                                runAction { gracefulRebootNode(httpClient, accessToken, server.id, timeout) }
+                                runAction {
+                                    val result = gracefulRebootNode(httpClient, accessToken, server.id, timeout)
+                                    if (result.success) {
+                                        pendingOperations = pendingOperations + (server.id to PendingOperation.REBOOTING)
+                                    }
+                                    result
+                                }
                             }
                         }
                     )
@@ -179,6 +231,7 @@ private fun promptDrainTimeoutAndConfirm(server: ServerStatus, actionLabel: Stri
 @Composable
 private fun ServerCard(
     server: ServerStatus,
+    pendingOperation: PendingOperation?,
     httpClient: HttpClient,
     accessToken: String,
     onCordon: () -> Unit,
@@ -218,6 +271,15 @@ private fun ServerCard(
             SpanText(server.name, modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium))
             ReadyBadge(server.ready)
         }
+        if (pendingOperation != null) {
+            SpanText(
+                when (pendingOperation) {
+                    PendingOperation.REBOOTING -> "🔄 再起動中... (自動で状態を確認しています)"
+                    PendingOperation.SHUTTING_DOWN -> "⏻ シャットダウン処理中... (自動で状態を確認しています)"
+                },
+                modifier = Modifier.color(Color("#8A6D00")).fontSize(FontSize.Small)
+            )
+        }
         SpanText(roleLabel(server.role), modifier = Modifier.color(Colors.Gray))
         SpanText("CPU: ${server.cpuCapacity} コア / メモリ: ${formatMemoryCapacity(server.memoryCapacity)}")
         val podText = if (server.podCount != null && server.podCapacity != null) {
@@ -239,12 +301,13 @@ private fun ServerCard(
             modifier = Modifier.fillMaxWidth().padding(top = 8.px),
             horizontalArrangement = Arrangement.spacedBy(8.px)
         ) {
+            val actionsEnabled = pendingOperation == null
             if (server.schedulable) {
-                Button(onClick = { onCordon() }) { SpanText("Cordon") }
+                Button(onClick = { onCordon() }, enabled = actionsEnabled) { SpanText("Cordon") }
             } else {
-                Button(onClick = { onUncordon() }) { SpanText("Uncordon") }
+                Button(onClick = { onUncordon() }, enabled = actionsEnabled) { SpanText("Uncordon") }
             }
-            Button(onClick = { onDrain() }) { SpanText("Drain") }
+            Button(onClick = { onDrain() }, enabled = actionsEnabled) { SpanText("Drain") }
             Button(onClick = { showPods = !showPods }) { SpanText(if (showPods) "Podを隠す" else "Pod一覧") }
         }
 
@@ -252,10 +315,10 @@ private fun ServerCard(
             modifier = Modifier.fillMaxWidth().padding(top = 4.px),
             horizontalArrangement = Arrangement.spacedBy(8.px)
         ) {
-            Button(onClick = { onShutdown() }) {
+            Button(onClick = { onShutdown() }, enabled = pendingOperation == null) {
                 SpanText("シャットダウン", modifier = Modifier.color(Color("#E34948")))
             }
-            Button(onClick = { onReboot() }) {
+            Button(onClick = { onReboot() }, enabled = pendingOperation == null) {
                 SpanText("再起動", modifier = Modifier.color(Color("#E34948")))
             }
         }
