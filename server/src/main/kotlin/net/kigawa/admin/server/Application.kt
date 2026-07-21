@@ -12,6 +12,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.URLBuilder
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
@@ -25,6 +26,11 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -105,6 +111,13 @@ fun Application.module() {
             json(Json { ignoreUnknownKeys = true })
         }
     }
+
+    // シャットダウン/再起動はDrain+SSH実行で数十秒〜数分かかるため、リクエストを
+    // ブロックせずバックグラウンドで実行する(進行状況はGET /api/serversの
+    // 自動更新で確認できる。issue #58)。
+    val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    monitor.subscribe(ApplicationStopping) { backgroundScope.cancel() }
+    val logger = environment.log
 
     routing {
         get("/health") {
@@ -233,7 +246,11 @@ fun Application.module() {
                 return@post
             }
             val timeout = request.drainTimeoutSeconds.coerceIn(0, 1800)
-            call.respond(gracefulNodeShutdown(nodeName, timeout, reboot = false))
+            backgroundScope.launch {
+                val result = gracefulNodeShutdown(nodeName, timeout, reboot = false)
+                if (!result.success) logger.warn("graceful-shutdown of $nodeName failed: ${result.message}")
+            }
+            call.respond(ActionResultDto(true, "シャットダウン処理を開始しました。進行状況は一覧の自動更新で確認できます。"))
         }
 
         post("/api/servers/{name}/graceful-reboot") {
@@ -254,7 +271,11 @@ fun Application.module() {
                 return@post
             }
             val timeout = request.drainTimeoutSeconds.coerceIn(0, 1800)
-            call.respond(gracefulNodeShutdown(nodeName, timeout, reboot = true))
+            backgroundScope.launch {
+                val result = gracefulNodeShutdown(nodeName, timeout, reboot = true)
+                if (!result.success) logger.warn("graceful-reboot of $nodeName failed: ${result.message}")
+            }
+            call.respond(ActionResultDto(true, "再起動処理を開始しました。進行状況は一覧の自動更新で確認できます。"))
         }
 
         delete("/api/pods/{namespace}/{name}") {

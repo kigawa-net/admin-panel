@@ -39,6 +39,13 @@ private sealed class ServerStatusUiState {
 
 private enum class PendingOperation { REBOOTING, SHUTTING_DOWN }
 
+/**
+ * [sawNotReady]はREBOOTINGの完了判定に使う: 開始直後はまだReady=trueのままなので、
+ * 「ready==true」だけを完了条件にすると、ノードが実際に落ちる前に即「完了」と
+ * 誤判定してしまう。一度NotReadyになったのを確認してからReadyに戻るのを待つ。
+ */
+private data class PendingOperationState(val operation: PendingOperation, val sawNotReady: Boolean = false)
+
 private const val PENDING_OPERATION_POLL_INTERVAL_MS = 5000L
 
 @Composable
@@ -46,7 +53,7 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<ServerStatusUiState>(ServerStatusUiState.Loading) }
     var refreshKey by remember { mutableStateOf(0) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
-    var pendingOperations by remember { mutableStateOf<Map<String, PendingOperation>>(emptyMap()) }
+    var pendingOperations by remember { mutableStateOf<Map<String, PendingOperationState>>(emptyMap()) }
     val httpClient = remember {
         HttpClient(Js) {
             install(ContentNegotiation) {
@@ -59,22 +66,27 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
     suspend fun refresh() {
         state = try {
             val servers = fetchServerStatuses(httpClient, accessToken).servers
-            val stillPending = mutableMapOf<String, PendingOperation>()
-            pendingOperations.forEach { (nodeId, op) ->
+            val stillPending = mutableMapOf<String, PendingOperationState>()
+            pendingOperations.forEach { (nodeId, opState) ->
                 val server = servers.find { it.id == nodeId }
-                val resolved = server == null || when (op) {
-                    PendingOperation.REBOOTING -> server.ready
+                if (server == null) {
+                    // ノード自体が消えた(一覧から見えなくなった)場合はこれ以上追跡できない
+                    return@forEach
+                }
+                val sawNotReady = opState.sawNotReady || !server.ready
+                val resolved = when (opState.operation) {
+                    // 開始直後はまだReady=trueのままなので、一度NotReadyを確認してからでないと
+                    // 「完了」とみなさない(でなければ落ちる前に完了扱いになってしまう)
+                    PendingOperation.REBOOTING -> sawNotReady && server.ready
                     PendingOperation.SHUTTING_DOWN -> !server.ready
                 }
                 if (resolved) {
-                    if (server != null) {
-                        statusMessage = when (op) {
-                            PendingOperation.REBOOTING -> "${server.name} の再起動が完了しました"
-                            PendingOperation.SHUTTING_DOWN -> "${server.name} のシャットダウンが完了しました"
-                        }
+                    statusMessage = when (opState.operation) {
+                        PendingOperation.REBOOTING -> "${server.name} の再起動が完了しました"
+                        PendingOperation.SHUTTING_DOWN -> "${server.name} のシャットダウンが完了しました"
                     }
                 } else {
-                    stillPending[nodeId] = op
+                    stillPending[nodeId] = opState.copy(sawNotReady = sawNotReady)
                 }
             }
             pendingOperations = stillPending
@@ -146,7 +158,7 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
                 is ServerStatusUiState.Loaded -> current.servers.forEach { server ->
                     ServerCard(
                         server = server,
-                        pendingOperation = pendingOperations[server.id],
+                        pendingOperation = pendingOperations[server.id]?.operation,
                         httpClient = httpClient,
                         accessToken = accessToken,
                         onCordon = {
@@ -186,7 +198,7 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
                                 runAction {
                                     val result = gracefulShutdownNode(httpClient, accessToken, server.id, timeout)
                                     if (result.success) {
-                                        pendingOperations = pendingOperations + (server.id to PendingOperation.SHUTTING_DOWN)
+                                        pendingOperations = pendingOperations + (server.id to PendingOperationState(PendingOperation.SHUTTING_DOWN))
                                     }
                                     result
                                 }
@@ -197,7 +209,7 @@ fun ServerStatusPage(accessToken: String, onBack: () -> Unit) {
                                 runAction {
                                     val result = gracefulRebootNode(httpClient, accessToken, server.id, timeout)
                                     if (result.success) {
-                                        pendingOperations = pendingOperations + (server.id to PendingOperation.REBOOTING)
+                                        pendingOperations = pendingOperations + (server.id to PendingOperationState(PendingOperation.REBOOTING))
                                     }
                                     result
                                 }
