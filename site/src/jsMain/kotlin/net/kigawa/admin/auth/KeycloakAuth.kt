@@ -10,9 +10,15 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.browser.localStorage
 import kotlinx.browser.window
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -72,7 +78,14 @@ private const val KEY_STATE = "kc_state"
 private const val KEY_REALM = "kc_realm"
 private const val KEY_ACCESS_TOKEN = "kc_access_token"
 private const val KEY_ID_TOKEN = "kc_id_token"
+private const val KEY_REFRESH_TOKEN = "kc_refresh_token"
+private const val KEY_EXPIRES_AT = "kc_expires_at"
 private const val KEY_USERNAME = "kc_username"
+
+/** Refresh this long before actual expiry, to allow for request latency and clock skew. */
+private const val REFRESH_MARGIN_MS = 30_000L
+
+private fun nowMillis(): Long = (js("Date.now()") as Double).toLong()
 
 private fun generateRandom(length: Int): String {
     val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
@@ -111,6 +124,9 @@ class KeycloakAuthProvider : AutoCloseable {
         }
     }
 
+    private val scope = CoroutineScope(Dispatchers.Default)
+    private var refreshJob: Job? = null
+
     fun setError(message: String) {
         _authState.value = AuthState.Error(message)
     }
@@ -121,6 +137,69 @@ class KeycloakAuthProvider : AutoCloseable {
         val realm = localStorage[KEY_REALM]?.let { name -> KeycloakRealm.entries.find { it.realmName == name } }
         if (token != null && username != null && realm != null) {
             _authState.value = AuthState.Authenticated(username = username, accessToken = token, realm = realm)
+            scheduleAutoRefresh(realm)
+        }
+    }
+
+    /**
+     * Keeps the access token alive for as long as this page stays open and the refresh token
+     * remains valid, since Keycloak access tokens are short-lived (commonly ~5 minutes) and this
+     * app has no other mechanism to renew them. Each page navigation creates a fresh provider
+     * (and thus a fresh loop), so this only needs to cover a single page's lifetime.
+     */
+    private fun scheduleAutoRefresh(realm: KeycloakRealm) {
+        refreshJob?.cancel()
+        refreshJob = scope.launch {
+            while (true) {
+                val expiresAt = localStorage[KEY_EXPIRES_AT]?.toLongOrNull()
+                val delayMs = if (expiresAt != null) {
+                    (expiresAt - nowMillis() - REFRESH_MARGIN_MS).coerceAtLeast(0L)
+                } else {
+                    0L
+                }
+                delay(delayMs)
+                if (!refreshAccessToken(realm)) break
+            }
+        }
+    }
+
+    /** Exchanges the stored refresh token for a new access token. Returns false if that fails
+     * (refresh token expired/revoked), leaving the current, likely-now-stale access token in
+     * place until the user next has to log in again. */
+    private suspend fun refreshAccessToken(realm: KeycloakRealm): Boolean {
+        val refreshToken = localStorage[KEY_REFRESH_TOKEN] ?: return false
+        return try {
+            val tokenResponse = httpClient.submitForm(
+                url = KeycloakConfig.tokenUrl(realm),
+                formParameters = parameters {
+                    append("grant_type", "refresh_token")
+                    append("client_id", KeycloakConfig.clientId)
+                    append("refresh_token", refreshToken)
+                }
+            ).body<TokenResponse>()
+
+            persistTokens(tokenResponse)
+
+            val current = _authState.value
+            if (current is AuthState.Authenticated) {
+                _authState.value = current.copy(accessToken = tokenResponse.accessToken)
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun persistTokens(tokenResponse: TokenResponse) {
+        localStorage[KEY_ACCESS_TOKEN] = tokenResponse.accessToken
+        localStorage[KEY_EXPIRES_AT] = (nowMillis() + tokenResponse.expiresIn * 1000L).toString()
+        if (tokenResponse.refreshToken != null) {
+            localStorage[KEY_REFRESH_TOKEN] = tokenResponse.refreshToken
+        }
+        if (tokenResponse.idToken != null) {
+            localStorage[KEY_ID_TOKEN] = tokenResponse.idToken
+        } else {
+            localStorage.removeItem(KEY_ID_TOKEN)
         }
     }
 
@@ -187,13 +266,8 @@ class KeycloakAuthProvider : AutoCloseable {
                 ?: userInfo.email
                 ?: "User"
 
-            localStorage[KEY_ACCESS_TOKEN] = tokenResponse.accessToken
+            persistTokens(tokenResponse)
             localStorage[KEY_USERNAME] = displayName
-            if (tokenResponse.idToken != null) {
-                localStorage[KEY_ID_TOKEN] = tokenResponse.idToken
-            } else {
-                localStorage.removeItem(KEY_ID_TOKEN)
-            }
 
             _authState.value = AuthState.Authenticated(
                 username = displayName,
@@ -211,8 +285,11 @@ class KeycloakAuthProvider : AutoCloseable {
         val idToken = localStorage[KEY_ID_TOKEN]
         val realm = localStorage[KEY_REALM]?.let { name -> KeycloakRealm.entries.find { it.realmName == name } }
             ?: KeycloakRealm.ADMIN
+        refreshJob?.cancel()
         localStorage.removeItem(KEY_ACCESS_TOKEN)
         localStorage.removeItem(KEY_ID_TOKEN)
+        localStorage.removeItem(KEY_REFRESH_TOKEN)
+        localStorage.removeItem(KEY_EXPIRES_AT)
         localStorage.removeItem(KEY_USERNAME)
         localStorage.removeItem(KEY_REALM)
         _authState.value = AuthState.Unauthenticated
@@ -226,6 +303,8 @@ class KeycloakAuthProvider : AutoCloseable {
     }
 
     override fun close() {
+        refreshJob?.cancel()
+        scope.cancel()
         httpClient.close()
     }
 }
