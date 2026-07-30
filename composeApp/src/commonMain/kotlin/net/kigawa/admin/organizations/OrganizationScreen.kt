@@ -54,7 +54,7 @@ private data class PendingConfirmation(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OrganizationScreen(accessToken: String, onBack: () -> Unit) {
+fun OrganizationScreen(accessToken: String, isAdmin: Boolean, onBack: () -> Unit) {
     var state by remember { mutableStateOf<OrganizationListUiState>(OrganizationListUiState.Loading) }
     var refreshKey by remember { mutableStateOf(0) }
     var pendingConfirmation by remember { mutableStateOf<PendingConfirmation?>(null) }
@@ -66,7 +66,12 @@ fun OrganizationScreen(accessToken: String, onBack: () -> Unit) {
 
     LaunchedEffect(accessToken, refreshKey) {
         state = try {
-            OrganizationListUiState.Loaded(fetchOrganizations(httpClient, accessToken).organizations)
+            val organizations = if (isAdmin) {
+                fetchOrganizations(httpClient, accessToken).organizations
+            } else {
+                fetchMyOrganizations(httpClient, accessToken).organizations
+            }
+            OrganizationListUiState.Loaded(organizations)
         } catch (e: Exception) {
             OrganizationListUiState.Error("組織一覧を取得できませんでした")
         }
@@ -129,7 +134,7 @@ fun OrganizationScreen(accessToken: String, onBack: () -> Unit) {
                     }
                     if (current.organizations.isEmpty()) {
                         Text(
-                            text = "組織はまだありません",
+                            text = if (isAdmin) "組織はまだありません" else "所属している組織はまだありません",
                             modifier = Modifier.align(Alignment.CenterHorizontally).padding(24.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -141,6 +146,7 @@ fun OrganizationScreen(accessToken: String, onBack: () -> Unit) {
                         items(current.organizations) { org ->
                             OrganizationCard(
                                 organization = org,
+                                canDelete = isAdmin,
                                 onManageMembers = { selectedOrg = org },
                                 onDelete = {
                                     pendingConfirmation = PendingConfirmation(
@@ -193,6 +199,7 @@ fun OrganizationScreen(accessToken: String, onBack: () -> Unit) {
 @Composable
 private fun OrganizationCard(
     organization: Organization,
+    canDelete: Boolean,
     onManageMembers: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -215,7 +222,9 @@ private fun OrganizationCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(onClick = onManageMembers) { Text("メンバー管理") }
-                OutlinedButton(onClick = onDelete) { Text("削除") }
+                if (canDelete) {
+                    OutlinedButton(onClick = onDelete) { Text("削除") }
+                }
             }
         }
     }
