@@ -158,9 +158,25 @@ class KeycloakAuthProvider : AutoCloseable {
                     0L
                 }
                 delay(delayMs)
-                if (!refreshAccessToken(realm)) break
+                if (!refreshAccessToken(realm)) {
+                    handleRefreshFailure()
+                    break
+                }
             }
         }
+    }
+
+    /** Refresh token expired or was revoked: the stored access token can now never become valid
+     * again on its own, so clear it and prompt the user to sign in again instead of leaving every
+     * subsequent API call to silently fail with 401. */
+    private fun handleRefreshFailure() {
+        localStorage.removeItem(KEY_ACCESS_TOKEN)
+        localStorage.removeItem(KEY_ID_TOKEN)
+        localStorage.removeItem(KEY_REFRESH_TOKEN)
+        localStorage.removeItem(KEY_EXPIRES_AT)
+        localStorage.removeItem(KEY_USERNAME)
+        localStorage.removeItem(KEY_REALM)
+        _authState.value = AuthState.Error("セッションの有効期限が切れました。再度ログインしてください。")
     }
 
     /** Exchanges the stored refresh token for a new access token. Returns false if that fails
