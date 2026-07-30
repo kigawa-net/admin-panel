@@ -38,7 +38,6 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
-import java.security.MessageDigest
 
 /** Internal cluster DNS for the kube-prometheus-stack Prometheus service (see kigawa01/k8s-system). */
 internal val prometheusUrl =
@@ -56,14 +55,12 @@ private val publicRealmUserInfoUrl = System.getenv("KEYCLOAK_PUBLIC_USERINFO_URL
     ?: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
 
 /**
- * Shared secret for the CI-facing GitHub App token endpoint (custom action -> admin-panel -> App).
- * Kept separate from Keycloak auth since CI workflows have no interactive user session; this is the
- * only credential CI needs, so the App's actual private key never has to leave admin-panel.
+ * Expected `aud` claim on GitHub Actions OIDC tokens presented to the CI-facing GitHub App
+ * token endpoint (custom action -> admin-panel -> App). Callers request an ID token scoped to
+ * this audience via `core.getIDToken(audience)`; no shared secret is involved.
  */
-private val githubAppCiToken = System.getenv("GITHUB_APP_CI_TOKEN")
-
-private fun constantTimeEquals(a: String, b: String): Boolean =
-    MessageDigest.isEqual(a.toByteArray(), b.toByteArray())
+private val adminPanelActionsAudience =
+    System.getenv("ADMIN_PANEL_ACTIONS_AUDIENCE") ?: "https://admin.kigawa.net"
 
 @Serializable
 data class TrafficPoint(
@@ -546,15 +543,17 @@ fun Application.module() {
             )
         }
 
-        // CI-facing broker: custom action -> admin-panel -> GitHub App. Authenticated with a
-        // shared secret (not Keycloak, since workflows have no interactive user session) so the
-        // App's private key only ever lives on this server, never in a GitHub Actions secret.
+        // CI-facing broker: custom action -> admin-panel -> GitHub App. Authenticated with the
+        // caller's own GitHub Actions OIDC token (verified against GitHub's published JWKS)
+        // instead of a shared secret, so there is no static credential to distribute or leak.
+        // The verified `repository` claim — not client input — is checked against
+        // ciTokenPolicy to decide what the caller may request.
         post("/api/github-app/ci-token") {
-            val presented = call.request.header("X-CI-Token")
-            if (githubAppCiToken.isNullOrBlank() || presented.isNullOrBlank() ||
-                !constantTimeEquals(presented, githubAppCiToken)
-            ) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing CI token"))
+            val presented = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            val claims = presented?.let { GithubActionsOidc.verify(httpClient, it, adminPanelActionsAudience) }
+            val callerRepository = claims?.repository
+            if (callerRepository.isNullOrBlank()) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing OIDC token"))
                 return@post
             }
             if (!GithubApp.isConfigured) {
@@ -563,6 +562,16 @@ fun Application.module() {
             }
             val request = call.receive<GithubCiTokenRequest>()
             val owner = request.owner ?: "kigawa-net"
+            val policyError = checkCiTokenRequest(
+                callerRepository = callerRepository,
+                requestedOwner = owner,
+                requestedRepositories = request.repositories,
+                requestedPermissions = request.permissions
+            )
+            if (policyError != null) {
+                call.respond(HttpStatusCode.Forbidden, mapOf("error" to policyError))
+                return@post
+            }
             val installation = GithubApp.getOrgInstallation(httpClient, owner)
             call.respond(
                 GithubApp.createInstallationToken(

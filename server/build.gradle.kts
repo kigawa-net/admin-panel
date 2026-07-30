@@ -22,6 +22,7 @@ dependencies {
     implementation(libs.sshj)
 
     testImplementation(kotlin("test"))
+    testImplementation(libs.ktor.client.mock)
 }
 
 kotlin {
