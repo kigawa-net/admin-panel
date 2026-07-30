@@ -204,6 +204,22 @@ suspend fun removeOrganizationMember(client: HttpClient, orgId: String, userId: 
     }
 }
 
+/** 組織名で検索し、一致した組織のIDを返す(作成直後に作成者をメンバー登録するために使う)。 */
+suspend fun findOrganizationIdByName(client: HttpClient, name: String): String? {
+    val organizations = listOrganizations(client) ?: return null
+    return organizations.organizations.find { it.name == name }?.id
+}
+
+/** 指定したユーザーIDがメンバーになっている組織だけを返す(一般ユーザーの「自分の組織」一覧用)。 */
+suspend fun listMyOrganizations(client: HttpClient, userId: String): OrganizationListDto? {
+    val all = listOrganizations(client) ?: return null
+    val mine = all.organizations.filter { org ->
+        val members = listOrganizationMembers(client, org.id) ?: return@filter false
+        members.members.any { it.id == userId }
+    }
+    return OrganizationListDto(mine)
+}
+
 /** メンバー追加時のユーザー検索用(kigawa-net realmの一般ユーザーを対象)。 */
 suspend fun searchKigawaNetUsers(client: HttpClient, query: String): KigawaNetUserListDto? {
     val token = orgServiceAccountToken(client) ?: return null

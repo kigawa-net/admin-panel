@@ -21,6 +21,13 @@ suspend fun fetchOrganizations(client: HttpClient, accessToken: String): Organiz
     }.body()
 }
 
+/** 呼び出したユーザー自身が所属する組織のみを取得する(一般ユーザー向け)。 */
+suspend fun fetchMyOrganizations(client: HttpClient, accessToken: String): OrganizationList {
+    return client.get("${OrganizationApiConfig.baseUrl}/organizations/mine") {
+        bearerAuth(accessToken)
+    }.body()
+}
+
 suspend fun createOrganization(client: HttpClient, accessToken: String, request: CreateOrganizationRequest): OrganizationActionResult {
     return client.post("${OrganizationApiConfig.baseUrl}/organizations") {
         bearerAuth(accessToken)

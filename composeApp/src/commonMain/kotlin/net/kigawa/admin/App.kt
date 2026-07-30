@@ -79,14 +79,11 @@ fun App(authProvider: KeycloakAuthProvider) {
                 } else {
                     currentScreen = AppScreen.Dashboard
                 }
-                AppScreen.Organizations -> if (isAdmin) {
-                    OrganizationScreen(
-                        accessToken = state.accessToken,
-                        onBack = { currentScreen = AppScreen.Dashboard }
-                    )
-                } else {
-                    currentScreen = AppScreen.Dashboard
-                }
+                AppScreen.Organizations -> OrganizationScreen(
+                    accessToken = state.accessToken,
+                    isAdmin = isAdmin,
+                    onBack = { currentScreen = AppScreen.Dashboard }
+                )
             }
         }
         is AuthState.Error -> {

@@ -38,7 +38,7 @@ private sealed class OrganizationListUiState {
 }
 
 @Composable
-fun OrganizationPage(accessToken: String, onBack: () -> Unit) {
+fun OrganizationPage(accessToken: String, isAdmin: Boolean, onBack: () -> Unit) {
     var state by remember { mutableStateOf<OrganizationListUiState>(OrganizationListUiState.Loading) }
     var refreshKey by remember { mutableStateOf(0) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
@@ -55,7 +55,12 @@ fun OrganizationPage(accessToken: String, onBack: () -> Unit) {
 
     LaunchedEffect(accessToken, refreshKey) {
         state = try {
-            OrganizationListUiState.Loaded(fetchOrganizations(httpClient, accessToken).organizations)
+            val organizations = if (isAdmin) {
+                fetchOrganizations(httpClient, accessToken).organizations
+            } else {
+                fetchMyOrganizations(httpClient, accessToken).organizations
+            }
+            OrganizationListUiState.Loaded(organizations)
         } catch (e: Exception) {
             OrganizationListUiState.Error("組織一覧を取得できませんでした")
         }
@@ -130,16 +135,25 @@ fun OrganizationPage(accessToken: String, onBack: () -> Unit) {
             when (val current = state) {
                 is OrganizationListUiState.Loading -> SpanText("読み込み中...")
                 is OrganizationListUiState.Error -> ErrorStateWithRetry(current.message, onRetry = { refreshKey++ })
-                is OrganizationListUiState.Loaded -> current.organizations.forEach { org ->
-                    OrganizationCard(
-                        organization = org,
-                        onManageMembers = { selectedOrg = org },
-                        onDelete = {
-                            if (window.confirm("${org.name} を削除しますか?元に戻せません。")) {
-                                runAction { deleteOrganization(httpClient, accessToken, org.id) }
+                is OrganizationListUiState.Loaded -> {
+                    if (current.organizations.isEmpty()) {
+                        SpanText(
+                            if (isAdmin) "組織はまだありません" else "所属している組織はまだありません",
+                            modifier = Modifier.color(Colors.Gray)
+                        )
+                    }
+                    current.organizations.forEach { org ->
+                        OrganizationCard(
+                            organization = org,
+                            canDelete = isAdmin,
+                            onManageMembers = { selectedOrg = org },
+                            onDelete = {
+                                if (window.confirm("${org.name} を削除しますか?元に戻せません。")) {
+                                    runAction { deleteOrganization(httpClient, accessToken, org.id) }
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -185,6 +199,7 @@ private fun CreateOrganizationForm(onCreate: (CreateOrganizationRequest) -> Unit
 @Composable
 private fun OrganizationCard(
     organization: Organization,
+    canDelete: Boolean,
     onManageMembers: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -211,7 +226,9 @@ private fun OrganizationCard(
             horizontalArrangement = Arrangement.spacedBy(8.px)
         ) {
             Button(onClick = { onManageMembers() }) { SpanText("メンバー管理") }
-            Button(onClick = { onDelete() }) { SpanText("削除") }
+            if (canDelete) {
+                Button(onClick = { onDelete() }) { SpanText("削除") }
+            }
         }
     }
 }

@@ -121,6 +121,26 @@ private fun DashboardPage(
                 )
             }
 
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.px)
+                    .backgroundColor(Colors.White)
+                    .borderRadius(8.px)
+                    .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
+                    .onClick { onOpenOrganizations() }
+                    .cursor(Cursor.Pointer)
+            ) {
+                SpanText(
+                    "組織管理",
+                    modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
+                )
+                SpanText(
+                    "組織の作成・メンバー管理を行う(管理者は削除も可能)",
+                    modifier = Modifier.color(Colors.Gray)
+                )
+            }
+
             if (isAdmin) {
                 Column(
                     modifier = Modifier
@@ -158,26 +178,6 @@ private fun DashboardPage(
                     )
                     SpanText(
                         "Keycloakユーザーの作成・削除・パスワードリセットを行う",
-                        modifier = Modifier.color(Colors.Gray)
-                    )
-                }
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.px)
-                        .backgroundColor(Colors.White)
-                        .borderRadius(8.px)
-                        .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
-                        .onClick { onOpenOrganizations() }
-                        .cursor(Cursor.Pointer)
-                ) {
-                    SpanText(
-                        "組織管理",
-                        modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
-                    )
-                    SpanText(
-                        "組織の作成・削除とメンバー管理を行う",
                         modifier = Modifier.color(Colors.Gray)
                     )
                 }

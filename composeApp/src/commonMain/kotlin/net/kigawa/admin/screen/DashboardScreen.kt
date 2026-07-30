@@ -117,6 +117,20 @@ fun DashboardScreen(
                 }
             }
 
+            Card(modifier = Modifier.fillMaxWidth().clickable { onOpenOrganizations() }) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "組織管理",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "組織の作成・メンバー管理を行う(管理者は削除も可能)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             if (isAdmin) {
                 Card(modifier = Modifier.fillMaxWidth().clickable { onOpenServers() }) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -140,20 +154,6 @@ fun DashboardScreen(
                         )
                         Text(
                             text = "Keycloakユーザーの作成・削除・パスワードリセットを行う",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                Card(modifier = Modifier.fillMaxWidth().clickable { onOpenOrganizations() }) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "組織管理",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Text(
-                            text = "組織の作成・削除とメンバー管理を行う",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

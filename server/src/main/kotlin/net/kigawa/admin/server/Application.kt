@@ -383,7 +383,8 @@ fun Application.module() {
             call.respond(resetKeycloakUserPassword(httpClient, userId, request.newPassword, request.temporary))
         }
 
-        // 組織管理(manage realmのログインのみ許可、対象データはkigawa-net realm)。
+        // 組織管理(対象データはkigawa-net realm)。全組織の一覧・削除はmanage realmの管理者限定、
+        // 作成・自分が所属する組織の閲覧・メンバー管理はkigawa-net realmの一般ユーザーも行える。
         // Keycloak Organizations REST APIを専用サービスアカウント(client_credentials)経由で呼ぶ。
         get("/api/organizations") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
@@ -399,9 +400,12 @@ fun Application.module() {
             }
         }
 
+        // 組織の作成はmanage realm・public(kigawa-net)realmどちらのユーザーも行える。
+        // 一般ユーザーが作成した場合は、作成者自身を自動的にその組織のメンバーとして登録する
+        // (でなければ作成した本人がその組織を一覧にも出せず操作もできなくなってしまう)。
         post("/api/organizations") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
                 return@post
             }
@@ -411,7 +415,15 @@ fun Application.module() {
                 call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
                 return@post
             }
-            call.respond(createOrganization(httpClient, request))
+            val result = createOrganization(httpClient, request)
+            if (result.success && !isValidAdminToken(httpClient, token)) {
+                val userId = getUserId(httpClient, publicRealmUserInfoUrl, token)
+                val orgId = userId?.let { findOrganizationIdByName(httpClient, request.name) }
+                if (userId != null && orgId != null) {
+                    addOrganizationMember(httpClient, orgId, userId)
+                }
+            }
+            call.respond(result)
         }
 
         delete("/api/organizations/{id}") {
@@ -430,13 +442,13 @@ fun Application.module() {
 
         get("/api/organizations/{id}/members") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
             val orgId = call.parameters["id"]
             if (orgId.isNullOrBlank()) {
                 call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
+                return@get
+            }
+            if (token.isNullOrBlank() || !canManageOrganization(httpClient, token, orgId)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
                 return@get
             }
             val members = listOrganizationMembers(httpClient, orgId)
@@ -449,13 +461,13 @@ fun Application.module() {
 
         post("/api/organizations/{id}/members") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
             val orgId = call.parameters["id"]
             if (orgId.isNullOrBlank()) {
                 call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
+                return@post
+            }
+            if (token.isNullOrBlank() || !canManageOrganization(httpClient, token, orgId)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
                 return@post
             }
             val request = try {
@@ -469,22 +481,43 @@ fun Application.module() {
 
         delete("/api/organizations/{id}/members/{userId}") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@delete
-            }
             val orgId = call.parameters["id"]
             val userId = call.parameters["userId"]
             if (orgId.isNullOrBlank() || userId.isNullOrBlank()) {
                 call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id or user id"))
                 return@delete
             }
+            if (token.isNullOrBlank() || !canManageOrganization(httpClient, token, orgId)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@delete
+            }
             call.respond(removeOrganizationMember(httpClient, orgId, userId))
+        }
+
+        // 組織一覧のうち、呼び出したユーザー自身がメンバーになっているものだけを返す
+        // (一般ユーザー向け。全組織を見せるadmin専用の GET /api/organizations とは別)。
+        get("/api/organizations/mine") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val userId = getUserId(httpClient, publicRealmUserInfoUrl, token)
+            if (userId == null) {
+                call.respond(HttpStatusCode.Forbidden, mapOf("error" to "not a kigawa-net realm user"))
+                return@get
+            }
+            val organizations = listMyOrganizations(httpClient, userId)
+            if (organizations == null) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "organization list unavailable"))
+            } else {
+                call.respond(organizations)
+            }
         }
 
         get("/api/organizations/users") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
                 return@get
             }
@@ -602,6 +635,32 @@ private suspend fun checkUserInfo(client: HttpClient, userInfoUrl: String, token
     } catch (e: Exception) {
         false
     }
+}
+
+@Serializable
+private data class UserInfoSubDto(val sub: String)
+
+/** userinfoエンドポイントからそのrealmでのユーザーID(sub)を取得する。トークンがそのrealmのものでなければnull。 */
+private suspend fun getUserId(client: HttpClient, userInfoUrl: String, token: String): String? {
+    return try {
+        val response: HttpResponse = client.get(userInfoUrl) {
+            header(HttpHeaders.Authorization, "Bearer $token")
+        }
+        if (response.status == HttpStatusCode.OK) response.body<UserInfoSubDto>().sub else null
+    } catch (e: Exception) {
+        null
+    }
+}
+
+/**
+ * 組織の操作(メンバー閲覧・追加・削除)を許可するか判定する。manage realmの管理者は常に許可、
+ * public(kigawa-net)realmの一般ユーザーは、対象組織のメンバー本人である場合のみ許可する。
+ */
+private suspend fun canManageOrganization(client: HttpClient, token: String, orgId: String): Boolean {
+    if (isValidAdminToken(client, token)) return true
+    val userId = getUserId(client, publicRealmUserInfoUrl, token) ?: return false
+    val members = listOrganizationMembers(client, orgId) ?: return false
+    return members.members.any { it.id == userId }
 }
 
 private suspend fun queryTraffic(client: HttpClient, rangeMinutes: Int): TrafficResponse {
