@@ -21,7 +21,8 @@ fun DashboardScreen(
     onOpenTraffic: () -> Unit,
     onOpenServers: () -> Unit,
     onOpenUsers: () -> Unit,
-    onOpenOrganizations: () -> Unit
+    onOpenOrganizations: () -> Unit,
+    onOpenInfrastructure: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -154,6 +155,20 @@ fun DashboardScreen(
                         )
                         Text(
                             text = "Keycloakユーザーの作成・削除・パスワードリセットを行う",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Card(modifier = Modifier.fillMaxWidth().clickable { onOpenInfrastructure() }) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "インフラ構成",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "物理ホストとVM(K8sノードを含む)の対応関係を確認する",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

@@ -4,6 +4,7 @@ import androidx.compose.runtime.*
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.auth.KeycloakRealm
+import net.kigawa.admin.infrastructure.InfrastructureScreen
 import net.kigawa.admin.networkmap.NetworkMapScreen
 import net.kigawa.admin.organizations.OrganizationScreen
 import net.kigawa.admin.screen.DashboardScreen
@@ -19,6 +20,7 @@ private sealed class AppScreen {
     object Servers : AppScreen()
     object Users : AppScreen()
     object Organizations : AppScreen()
+    object Infrastructure : AppScreen()
 }
 
 @Composable
@@ -53,7 +55,8 @@ fun App(authProvider: KeycloakAuthProvider) {
                     onOpenTraffic = { currentScreen = AppScreen.Traffic },
                     onOpenServers = { currentScreen = AppScreen.Servers },
                     onOpenUsers = { currentScreen = AppScreen.Users },
-                    onOpenOrganizations = { currentScreen = AppScreen.Organizations }
+                    onOpenOrganizations = { currentScreen = AppScreen.Organizations },
+                    onOpenInfrastructure = { currentScreen = AppScreen.Infrastructure }
                 )
                 AppScreen.NetworkMap -> NetworkMapScreen(
                     accessToken = state.accessToken,
@@ -84,6 +87,14 @@ fun App(authProvider: KeycloakAuthProvider) {
                     isAdmin = isAdmin,
                     onBack = { currentScreen = AppScreen.Dashboard }
                 )
+                AppScreen.Infrastructure -> if (isAdmin) {
+                    InfrastructureScreen(
+                        accessToken = state.accessToken,
+                        onBack = { currentScreen = AppScreen.Dashboard }
+                    )
+                } else {
+                    currentScreen = AppScreen.Dashboard
+                }
             }
         }
         is AuthState.Error -> {

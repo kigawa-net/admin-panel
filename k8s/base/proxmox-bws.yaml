@@ -1,0 +1,16 @@
+apiVersion: k8s.bitwarden.com/v1
+kind: BitwardenSecret
+metadata:
+  name: admin-panel-proxmox-service-bws
+spec:
+  organizationId: "a2b57f3d-6e2b-4467-b499-b31e00bfd804"
+  secretName: admin-panel-proxmox-service
+  authToken:
+    secretName: bitwarden-sec
+    secretKey: token
+  map:
+    # admin-panel@pve!infra-view (PVEAuditor、読み取り専用) のAPIトークン。
+    - bwSecretId: "732a2157-4417-4cfb-a968-b4a4000bb4c1" # admin-panel-proxmox-token-id
+      secretKeyName: tokenId
+    - bwSecretId: "f8d45adf-f35a-45ab-b7b4-b4a4000bbff2" # admin-panel-proxmox-token-secret
+      secretKeyName: tokenSecret

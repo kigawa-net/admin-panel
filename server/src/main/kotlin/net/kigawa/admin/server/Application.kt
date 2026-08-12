@@ -534,6 +534,16 @@ fun Application.module() {
             }
         }
 
+        // 物理ホスト(Proxmox)とVM(K8sノードを含む)の対応関係。管理者限定。
+        get("/api/infrastructure") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            call.respond(fetchInfrastructureTopology())
+        }
+
         // GitHub App (kigawa-net, app_id 4316503) operation: mint scoped installation tokens
         // in place of the long-lived org PAT. Admin-only, since a minted token can act with up
         // to the App's full contents:write permission.
