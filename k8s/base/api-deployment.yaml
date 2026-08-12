@@ -95,6 +95,24 @@ spec:
                   name: admin-panel-node-ssh
                   key: sudo-password
                   optional: true
+            # インフラ構成画面(物理ホスト/VM対応表示)が使う、Proxmox VE APIの読み取り専用
+            # トークン。admin-panel-proxmox-service シークレットは事前に別途作成が必要
+            # (Proxmox側でDatacenter > Permissions > API Tokensから発行し、PVEAuditRole
+            # 程度の最小権限を付与。値はkinfra/Bitwarden経由、またはkubectl create secretで
+            # tokenId/tokenSecret キーを投入)。未設定の間は画面に「Proxmox連携が設定されて
+            # いません」と表示されるのみで、他機能には影響しない。
+            - name: PROXMOX_API_TOKEN_ID
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-proxmox-service
+                  key: tokenId
+                  optional: true
+            - name: PROXMOX_API_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-proxmox-service
+                  key: tokenSecret
+                  optional: true
           resources:
             requests:
               cpu: 50m
