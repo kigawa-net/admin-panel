@@ -32,7 +32,8 @@ fun HomePage() {
             onOpenServers = { ctx.router.navigateTo("/servers") },
             onOpenUsers = { ctx.router.navigateTo("/users") },
             onOpenOrganizations = { ctx.router.navigateTo("/organizations") },
-            onOpenGithubApp = { ctx.router.navigateTo("/github-app") }
+            onOpenGithubApp = { ctx.router.navigateTo("/github-app") },
+            onOpenInfrastructure = { ctx.router.navigateTo("/infrastructure") }
         )
     }
 }
@@ -46,7 +47,8 @@ private fun DashboardPage(
     onOpenServers: () -> Unit,
     onOpenUsers: () -> Unit,
     onOpenOrganizations: () -> Unit,
-    onOpenGithubApp: () -> Unit
+    onOpenGithubApp: () -> Unit,
+    onOpenInfrastructure: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -198,6 +200,26 @@ private fun DashboardPage(
                     )
                     SpanText(
                         "kigawa-net GitHub Appのインストールトークンを発行する",
+                        modifier = Modifier.color(Colors.Gray)
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.px)
+                        .backgroundColor(Colors.White)
+                        .borderRadius(8.px)
+                        .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
+                        .onClick { onOpenInfrastructure() }
+                        .cursor(Cursor.Pointer)
+                ) {
+                    SpanText(
+                        "インフラ構成",
+                        modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
+                    )
+                    SpanText(
+                        "物理ホストとVM(K8sノードを含む)の対応関係を確認する",
                         modifier = Modifier.color(Colors.Gray)
                     )
                 }
