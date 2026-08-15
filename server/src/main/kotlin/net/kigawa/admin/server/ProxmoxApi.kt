@@ -13,8 +13,11 @@ import kotlinx.serialization.json.Json
 import java.security.cert.X509Certificate
 import javax.net.ssl.X509TrustManager
 
+// system-proxmoxのExternalName Service(proxmox-service)はexternalNameに生IPを設定して
+// いるため、DNS仕様上CNAMEとして解決できずCoreDNSからNXDOMAINが返る(要修正はこのリポジトリの
+// 範囲外)。回避策としてそのIPを直接指定する。
 private val proxmoxApiUrl =
-    System.getenv("PROXMOX_API_URL") ?: "https://proxmox-service.system-proxmox.svc.cluster.local:8006"
+    System.getenv("PROXMOX_API_URL") ?: "https://192.168.1.40:8006"
 private val proxmoxTokenId = System.getenv("PROXMOX_API_TOKEN_ID")
 private val proxmoxTokenSecret = System.getenv("PROXMOX_API_TOKEN_SECRET")
 
