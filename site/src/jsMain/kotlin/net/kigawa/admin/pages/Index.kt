@@ -17,6 +17,7 @@ import com.varabyte.kobweb.silk.components.forms.Button
 import com.varabyte.kobweb.silk.components.text.SpanText
 import net.kigawa.admin.auth.AuthGuard
 import net.kigawa.admin.auth.KeycloakRealm
+import net.kigawa.admin.layout.AppShell
 import org.jetbrains.compose.web.css.*
 
 @Page
@@ -24,17 +25,20 @@ import org.jetbrains.compose.web.css.*
 fun HomePage() {
     val ctx = rememberPageContext()
     AuthGuard { state, logout ->
-        DashboardPage(
-            username = state.username,
-            isAdmin = state.realm == KeycloakRealm.ADMIN,
-            onLogout = logout,
-            onOpenNetworkMap = { ctx.router.navigateTo("/network-map") },
-            onOpenServers = { ctx.router.navigateTo("/servers") },
-            onOpenUsers = { ctx.router.navigateTo("/users") },
-            onOpenOrganizations = { ctx.router.navigateTo("/organizations") },
-            onOpenGithubApp = { ctx.router.navigateTo("/github-app") },
-            onOpenInfrastructure = { ctx.router.navigateTo("/infrastructure") }
-        )
+        val isAdmin = state.realm == KeycloakRealm.ADMIN
+        AppShell(isAdmin = isAdmin) {
+            DashboardPage(
+                username = state.username,
+                isAdmin = isAdmin,
+                onLogout = logout,
+                onOpenNetworkMap = { ctx.router.navigateTo("/network-map") },
+                onOpenServers = { ctx.router.navigateTo("/servers") },
+                onOpenUsers = { ctx.router.navigateTo("/users") },
+                onOpenOrganizations = { ctx.router.navigateTo("/organizations") },
+                onOpenGithubApp = { ctx.router.navigateTo("/github-app") },
+                onOpenInfrastructure = { ctx.router.navigateTo("/infrastructure") }
+            )
+        }
     }
 }
 
