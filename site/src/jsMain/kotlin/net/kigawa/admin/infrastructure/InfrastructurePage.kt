@@ -49,7 +49,11 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     LaunchedEffect(accessToken, refreshKey) {
         state = try {
             InfrastructureUiState.Loaded(fetchInfrastructureTopology(httpClient, accessToken))
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // ktor-client-jsがブラウザのfetch()失敗(CORS・オフライン等)を投げる際、
+            // Kotlinのcatch (e: Exception)をすり抜けてコルーチンの未捕捉例外ハンドラに
+            // まで届き、ページ全体の描画が白紙になる不具合が実機で確認された。
+            // Throwableで受けることで、この描画クラッシュを防ぐ。
             InfrastructureUiState.Error("インフラ構成を取得できませんでした")
         }
     }
