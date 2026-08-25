@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       # 同一リポジトリへのcheckout+pushのみが目的で、他リポジトリへのアクセスは不要なため、
       # 標準のGITHUB_TOKEN(contents: write権限を付与済み)を使う。GitHub Appのインストール
@@ -83,10 +84,24 @@ jobs:
           cd k8s/overlays/production
           sed -i 's|newTag:.*|newTag: main-${{ github.sha }}|' kustomization.yaml
 
+      # main は必須PRのブランチ保護がかかっており、ビルトインのgithub-actionsボットへの
+      # バイパス権限付与はREST/Repository Ruleset/Terraformのいずれの方式でも実際には
+      # 反映されないことを確認した(GitHubがリクエストを200で受理しても、
+      # bypassPullRequestAllowancesに永続化されない)。そのためmainへの直接pushは諦め、
+      # PRを作成してすぐにマージする方式にした。required_approving_review_count=0・
+      # 必須ステータスチェックなしのため、作成直後にマージ可能。
       - name: Commit and push manifest update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          BRANCH="chore/image-tag-${{ github.sha }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add k8s/overlays/production/kustomization.yaml
           git commit -m "chore: update admin-panel image tag to main-${{ github.sha }}"
-          git push
+          git push origin "$BRANCH"
+          PR_URL=$(gh pr create --title "chore: update admin-panel image tag to main-${{ github.sha }}" \
+            --body "CIによる自動更新(ビルド元コミット: ${{ github.sha }})" \
+            --base main --head "$BRANCH")
+          gh pr merge "$PR_URL" --squash --delete-branch
