@@ -3,6 +3,7 @@ package net.kigawa.admin.server
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -88,6 +89,13 @@ private fun buildProxmoxHttpClient(): HttpClient {
         }
         install(ClientContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
+        }
+        // タイムアウト未設定だとProxmoxが応答しない場合にリクエストが無期限にハング
+        // し、/api/infrastructure全体がCloudflareの524(オリジンタイムアウト)を
+        // 引き起こしてしまう(実機で発生を確認)。
+        install(HttpTimeout) {
+            requestTimeoutMillis = 10_000
+            connectTimeoutMillis = 5_000
         }
     }
 }

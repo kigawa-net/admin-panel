@@ -3,6 +3,7 @@ package net.kigawa.admin.server
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -154,6 +155,13 @@ internal fun buildKubernetesHttpClient(): HttpClient? {
         }
         install(ClientContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
+        }
+        // タイムアウト未設定だとAPIサーバーが応答しない場合にリクエストが無期限に
+        // ハングし、呼び出し元エンドポイント全体がCloudflareの524(オリジンタイム
+        // アウト)を引き起こしてしまう。
+        install(HttpTimeout) {
+            requestTimeoutMillis = 10_000
+            connectTimeoutMillis = 5_000
         }
     }
 }
