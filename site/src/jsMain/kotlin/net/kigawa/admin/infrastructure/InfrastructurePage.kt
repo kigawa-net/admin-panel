@@ -93,6 +93,13 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                         "Proxmox連携が設定されていません(PROXMOX_API_TOKEN_ID / PROXMOX_API_TOKEN_SECRET未設定)",
                         modifier = Modifier.color(Colors.Gray)
                     )
+                } else if (!current.topology.proxmoxReachable) {
+                    ErrorStateWithRetry(
+                        "Proxmoxに接続できませんでした。しばらくしてからもう一度お試しください。",
+                        onRetry = { refreshKey++ }
+                    )
+                } else if (current.topology.hosts.isEmpty() && current.topology.standaloneNodes.isEmpty()) {
+                    SpanText("物理ホスト・ノードが見つかりませんでした", modifier = Modifier.color(Colors.Gray))
                 } else {
                     current.topology.hosts.forEach { host -> HostCard(host) }
                     if (current.topology.standaloneNodes.isNotEmpty()) {

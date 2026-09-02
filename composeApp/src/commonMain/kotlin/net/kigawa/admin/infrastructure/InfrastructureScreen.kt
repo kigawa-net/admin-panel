@@ -81,6 +81,18 @@ fun InfrastructureScreen(accessToken: String, onBack: () -> Unit) {
                         modifier = Modifier.align(Alignment.Center).padding(24.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                } else if (!current.topology.proxmoxReachable) {
+                    ErrorStateWithRetry(
+                        message = "Proxmoxに接続できませんでした。しばらくしてからもう一度お試しください。",
+                        onRetry = { refreshKey++ },
+                        modifier = Modifier.align(Alignment.Center).padding(16.dp)
+                    )
+                } else if (current.topology.hosts.isEmpty() && current.topology.standaloneNodes.isEmpty()) {
+                    Text(
+                        text = "物理ホスト・ノードが見つかりませんでした",
+                        modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize().padding(16.dp),

@@ -25,6 +25,7 @@ data class InfraHost(
 @Serializable
 data class InfrastructureTopology(
     val proxmoxConfigured: Boolean,
+    val proxmoxReachable: Boolean = true,
     val hosts: List<InfraHost> = emptyList(),
     val standaloneNodes: List<ServerStatus> = emptyList()
 )
