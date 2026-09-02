@@ -66,6 +66,10 @@ data class InfraHostDto(
 @Serializable
 data class InfrastructureTopologyDto(
     val proxmoxConfigured: Boolean,
+    /** Proxmox APIのトークンは設定されているが、呼び出しが失敗した(到達不能・認証エラー等)場合false。
+     * hosts/standaloneNodesが空のときにこれで区別しないと、クライアント側で「本当に0台」なのか
+     * 「取得に失敗した」のか判別できず、何も表示されない画面になってしまう。 */
+    val proxmoxReachable: Boolean = true,
     val hosts: List<InfraHostDto> = emptyList(),
     /** ProxmoxのVMとして見つからなかったK8sノード(独立した物理マシン上で直接動作していると推定される)。 */
     val standaloneNodes: List<ServerStatusDto> = emptyList()
@@ -117,7 +121,7 @@ suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
                 header("Authorization", auth)
             }.body<ProxmoxEnvelope<List<ProxmoxNodeDto>>>().data
         } catch (e: Exception) {
-            return InfrastructureTopologyDto(proxmoxConfigured = true, hosts = emptyList())
+            return InfrastructureTopologyDto(proxmoxConfigured = true, proxmoxReachable = false, hosts = emptyList())
         }
 
         val k8sNodesByName = fetchServerStatuses()?.servers?.associateBy { it.name } ?: emptyMap()
