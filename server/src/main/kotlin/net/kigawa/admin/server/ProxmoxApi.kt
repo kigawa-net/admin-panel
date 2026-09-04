@@ -3,11 +3,13 @@ package net.kigawa.admin.server
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.delay
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -118,6 +120,22 @@ private fun authHeader(): String? {
     return "PVEAPIToken=$tokenId=$tokenSecret"
 }
 
+/**
+ * ログでHttpRequestTimeoutExceptionが本番稼働中に断続的に発生することを確認済み(手動での
+ * wget/生JVM再現は常に成功する一方、実運用では時折20秒のタイムアウトに達する)。両レプリカが
+ * ほぼ同時刻に失敗していたことから、Proxmox側/経路上の一過性の遅延と判断し、1回だけ即座に
+ * リトライすることで復帰を試みる。
+ */
+private suspend fun <T> withTimeoutRetry(description: String, block: suspend () -> T): T {
+    try {
+        return block()
+    } catch (e: HttpRequestTimeoutException) {
+        logger.warn("$description timed out on first attempt, retrying once: ${e.message}")
+        delay(300)
+        return block()
+    }
+}
+
 /** Proxmoxクラスタの物理ホスト一覧とそこで動くVMを取得し、K8sノード一覧と突き合わせて返す。 */
 suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
     val auth = authHeader() ?: return InfrastructureTopologyDto(proxmoxConfigured = false)
@@ -125,9 +143,11 @@ suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
     val client = buildProxmoxHttpClient()
     try {
         val nodes = try {
-            client.get("$proxmoxApiUrl/api2/json/nodes") {
-                header("Authorization", auth)
-            }.body<ProxmoxEnvelope<List<ProxmoxNodeDto>>>().data
+            withTimeoutRetry("Proxmox nodes fetch") {
+                client.get("$proxmoxApiUrl/api2/json/nodes") {
+                    header("Authorization", auth)
+                }.body<ProxmoxEnvelope<List<ProxmoxNodeDto>>>().data
+            }
         } catch (e: Exception) {
             // 実機でwget/生JVM HttpsURLConnectionでの再現テストは常に成功するのに対し、
             // このKtor CIOクライアント経由の呼び出しだけが失敗し続けるという原因不明の
@@ -142,9 +162,11 @@ suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
         val hosts = nodes.sortedBy { it.node }.map { node ->
             val vms = if (node.status == "online") {
                 try {
-                    client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/qemu") {
-                        header("Authorization", auth)
-                    }.body<ProxmoxEnvelope<List<ProxmoxVmDto>>>().data
+                    withTimeoutRetry("Proxmox qemu fetch for node ${node.node}") {
+                        client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/qemu") {
+                            header("Authorization", auth)
+                        }.body<ProxmoxEnvelope<List<ProxmoxVmDto>>>().data
+                    }
                 } catch (e: Exception) {
                     logger.warn("Proxmox qemu fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}", e)
                     emptyList()
