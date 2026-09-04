@@ -160,8 +160,8 @@ internal fun buildKubernetesHttpClient(): HttpClient? {
         // ハングし、呼び出し元エンドポイント全体がCloudflareの524(オリジンタイム
         // アウト)を引き起こしてしまう。
         install(HttpTimeout) {
-            requestTimeoutMillis = 10_000
-            connectTimeoutMillis = 5_000
+            requestTimeoutMillis = 20_000
+            connectTimeoutMillis = 10_000
         }
     }
 }

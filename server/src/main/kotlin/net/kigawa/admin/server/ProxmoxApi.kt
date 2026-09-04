@@ -98,8 +98,13 @@ private fun buildProxmoxHttpClient(): HttpClient {
         // し、/api/infrastructure全体がCloudflareの524(オリジンタイムアウト)を
         // 引き起こしてしまう(実機で発生を確認)。
         install(HttpTimeout) {
-            requestTimeoutMillis = 10_000
-            connectTimeoutMillis = 5_000
+            // 実測でProxmoxへの単発呼び出しに4秒以上かかるケースが確認されており、5秒の
+            // connectTimeoutでは余裕が少なすぎた(このエンドポイントはnodes呼び出しに続けて
+            // オンラインホストごとにqemu呼び出しを行うため、複数回の呼び出しのいずれか一つが
+            // 詰まるだけで画面全体が「接続できませんでした」になっていた)。524を防ぐ元々の
+            // 目的は保ちつつ、より現実的な値に緩和する。
+            requestTimeoutMillis = 20_000
+            connectTimeoutMillis = 10_000
         }
     }
 }
