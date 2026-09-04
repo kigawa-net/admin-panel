@@ -11,8 +11,11 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.slf4j.LoggerFactory
 import java.security.cert.X509Certificate
 import javax.net.ssl.X509TrustManager
+
+private val logger = LoggerFactory.getLogger("ProxmoxApi")
 
 // system-proxmoxのExternalName Service(proxmox-service)はexternalNameに生IPを設定して
 // いるため、DNS仕様上CNAMEとして解決できずCoreDNSからNXDOMAINが返る(要修正はこのリポジトリの
@@ -126,6 +129,10 @@ suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
                 header("Authorization", auth)
             }.body<ProxmoxEnvelope<List<ProxmoxNodeDto>>>().data
         } catch (e: Exception) {
+            // 実機でwget/生JVM HttpsURLConnectionでの再現テストは常に成功するのに対し、
+            // このKtor CIOクライアント経由の呼び出しだけが失敗し続けるという原因不明の
+            // 事象が報告されているため、実際の例外を記録して次回発生時に追えるようにする。
+            logger.warn("Proxmox nodes fetch failed: ${e::class.qualifiedName}: ${e.message}", e)
             return InfrastructureTopologyDto(proxmoxConfigured = true, proxmoxReachable = false, hosts = emptyList())
         }
 
@@ -139,6 +146,7 @@ suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
                         header("Authorization", auth)
                     }.body<ProxmoxEnvelope<List<ProxmoxVmDto>>>().data
                 } catch (e: Exception) {
+                    logger.warn("Proxmox qemu fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}", e)
                     emptyList()
                 }
             } else {
