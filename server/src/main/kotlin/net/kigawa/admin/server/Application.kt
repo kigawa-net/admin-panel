@@ -28,9 +28,10 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -129,9 +130,22 @@ fun Application.module() {
         // エクスポートを自前ホストしている構成ではその機能自体は不要だが、エンドポイント
         // が存在しないと404でEventSourceのonerrorが発火しコンソールにエラーが出続ける
         // ため、接続だけ受け付けて何もイベントを送らないダミー実装で解消する。
+        //
+        // 最初のバージョンは何もバイトを送らず接続を保持するだけだったが、Cloudflare側が
+        // データの流れないアイドル接続を約10秒でタイムアウトさせ502を返すことが判明した
+        // (実機で確認)。SSEコメント行を接続直後と一定間隔で送り続け、中間プロキシから
+        // 「生きている」接続として扱われるようにする。
         get("/api/kobweb-status") {
             call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
-                awaitCancellation()
+                try {
+                    while (true) {
+                        writeStringUtf8(": keep-alive\n\n")
+                        flush()
+                        delay(15_000)
+                    }
+                } catch (e: Exception) {
+                    // クライアント切断時に書き込みが失敗するのは正常なので握りつぶす
+                }
             }
         }
 
