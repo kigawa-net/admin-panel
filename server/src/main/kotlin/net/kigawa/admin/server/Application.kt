@@ -7,6 +7,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientCon
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
+import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.URLBuilder
@@ -21,6 +22,7 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.header
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -28,6 +30,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -119,6 +122,17 @@ fun Application.module() {
     routing {
         get("/health") {
             call.respondText("OK")
+        }
+
+        // Kobwebが生成する本番JS(admin.js)も、実開発サーバー(`kobweb run`)のライブ
+        // リロード通知用SSEエンドポイントに無条件で接続を試みる設定を持つ。この静的
+        // エクスポートを自前ホストしている構成ではその機能自体は不要だが、エンドポイント
+        // が存在しないと404でEventSourceのonerrorが発火しコンソールにエラーが出続ける
+        // ため、接続だけ受け付けて何もイベントを送らないダミー実装で解消する。
+        get("/api/kobweb-status") {
+            call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
+                awaitCancellation()
+            }
         }
 
         get("/api/traffic") {
