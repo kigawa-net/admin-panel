@@ -19,3 +19,5 @@ actual fun sha256Base64Url(input: String): String {
     val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.US_ASCII))
     return Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
 }
+
+actual fun currentTimeMillis(): Long = System.currentTimeMillis()

@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import net.kigawa.admin.auth.KeycloakAuthProvider
+import net.kigawa.admin.auth.SharedPreferencesTokenStorage
 
 private const val REDIRECT_SCHEME = "net.kigawa.admin"
 private const val REDIRECT_HOST = "callback"
@@ -14,6 +15,7 @@ private const val REDIRECT_URI = "$REDIRECT_SCHEME://$REDIRECT_HOST"
 class MainActivity : ComponentActivity() {
     private val authProvider = KeycloakAuthProvider(
         redirectUri = REDIRECT_URI,
+        tokenStorage = SharedPreferencesTokenStorage(this),
         launchAuthorizationUrl = { url ->
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         }

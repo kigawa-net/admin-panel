@@ -4,6 +4,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.sun.net.httpserver.HttpServer
 import net.kigawa.admin.auth.KeycloakAuthProvider
+import net.kigawa.admin.auth.PreferencesTokenStorage
 import java.awt.Desktop
 import java.net.InetSocketAddress
 import java.net.URI
@@ -43,6 +44,7 @@ private fun createDesktopAuthProvider(): KeycloakAuthProvider {
 
     provider = KeycloakAuthProvider(
         redirectUri = redirectUri,
+        tokenStorage = PreferencesTokenStorage(),
         launchAuthorizationUrl = { url -> Desktop.getDesktop().browse(URI(url)) }
     )
     return provider
