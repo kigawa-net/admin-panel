@@ -90,6 +90,11 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "net.kigawa.admin"
             packageVersion = "1.0.0"
+            // jlinkの自動検出(jdeps)がcom.sun.net.httpserver.HttpServer(OIDCの
+            // ループバックリダイレクト受信に使用、main.kt)への依存を検出できず、
+            // パッケージ済み配布物(deb/msi/dmg)がNoClassDefFoundErrorで起動時に
+            // 即クラッシュしていたため、明示的にモジュールを追加する。
+            modules("jdk.httpserver")
         }
     }
 }
