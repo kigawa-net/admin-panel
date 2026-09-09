@@ -25,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,9 +48,15 @@ fun InfrastructureScreen(accessToken: String, onBack: () -> Unit) {
     var refreshKey by remember { mutableStateOf(0) }
     val httpClient = remember { createHttpClient() }
 
-    LaunchedEffect(accessToken, refreshKey) {
+    // accessTokenはKeycloakのトークン自動更新のたびに新しい値になる。LaunchedEffectの
+    // キーにaccessTokenを直接含めると、この画面を開いたままにしているだけでトークン
+    // 更新のたびに再取得が走ってしまうため、rememberUpdatedStateで最新値だけを参照し、
+    // エフェクト自体はrefreshKeyのみで再実行されるようにする。
+    val currentAccessToken by rememberUpdatedState(accessToken)
+
+    LaunchedEffect(refreshKey) {
         state = try {
-            InfrastructureUiState.Loaded(fetchInfrastructureTopology(httpClient, accessToken))
+            InfrastructureUiState.Loaded(fetchInfrastructureTopology(httpClient, currentAccessToken))
         } catch (e: Exception) {
             InfrastructureUiState.Error("インフラ構成を取得できませんでした")
         }

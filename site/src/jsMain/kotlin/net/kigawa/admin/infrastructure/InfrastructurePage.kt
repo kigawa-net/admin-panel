@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import com.varabyte.kobweb.compose.css.FontSize
 import com.varabyte.kobweb.compose.css.FontWeight
@@ -46,9 +47,18 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(accessToken, refreshKey) {
+    // accessTokenはKeycloakのトークン自動更新のたびに(トークン有効期限前の
+    // サイレントリフレッシュで)新しい値になる。LaunchedEffectのキーにaccessTokenを
+    // 直接含めると、ユーザーがこのページを開いたままにしているだけでトークン更新の
+    // たびに再取得が走ってしまい、断続的なProxmox接続エラーの実運用ログで観測された
+    // 「約9分間隔でのバースト状の失敗」の原因になっていた。rememberUpdatedStateで
+    // 最新のトークン値だけを参照し、エフェクト自体はrefreshKey(初回表示・再試行時)
+    // のみで再実行されるようにする。
+    val currentAccessToken by rememberUpdatedState(accessToken)
+
+    LaunchedEffect(refreshKey) {
         state = try {
-            InfrastructureUiState.Loaded(fetchInfrastructureTopology(httpClient, accessToken))
+            InfrastructureUiState.Loaded(fetchInfrastructureTopology(httpClient, currentAccessToken))
         } catch (e: Throwable) {
             // ktor-client-jsがブラウザのfetch()失敗(CORS・オフライン等)を投げる際、
             // Kotlinのcatch (e: Exception)をすり抜けてコルーチンの未捕捉例外ハンドラに
