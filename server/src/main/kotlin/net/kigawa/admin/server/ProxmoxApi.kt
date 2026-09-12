@@ -95,6 +95,16 @@ private fun buildProxmoxHttpClient(): HttpClient {
             https {
                 trustManager = trustAllManager
             }
+            // このクライアントはnodes呼び出し→(間に別のK8s API呼び出しを挟んで)→
+            // オンラインホストごとのqemu呼び出し、と1回のfetchInfrastructureTopology()
+            // 内で複数回・時間差のあるリクエストに使い回される。keep-alive接続プールの
+            // デフォルト動作のままだと、間に挟まる呼び出しの分だけ空いた時間でProxmox側
+            // (または経路上)がコネクションを閉じてしまい、使い回された古い接続への
+            // 書き込みでEOFException("Not enough data available")が発生していた
+            // (実機ログで確認)。keepAliveTimeを0にして接続の使い回し自体を無効化し、
+            // 毎回新規にTCP/TLS接続を張るようにする。
+            endpoint.keepAliveTime = 0
+            endpoint.pipelineMaxSize = 1
         }
         install(ClientContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
