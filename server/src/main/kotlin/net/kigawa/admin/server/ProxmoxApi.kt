@@ -132,16 +132,17 @@ private fun authHeader(): String? {
 
 /**
  * ログでHttpRequestTimeoutExceptionが本番稼働中に断続的に発生することを確認済み(手動での
- * wget/生JVM再現は常に成功する一方、実運用では時折20秒のタイムアウトに達する)。両レプリカが
- * ほぼ同時刻に失敗していたことから、Proxmox側/経路上の一過性の遅延と判断し、1回だけ即座に
- * リトライすることで復帰を試みる。
+ * wget/生JVM再現は常に成功する一方、実運用では時折20秒のタイムアウトに達する)。実機で
+ * 「20秒タイムアウトの直後(数十秒以内)には正常応答に戻っている」ことを繰り返し確認して
+ * おり、host4側の瞬断は数十秒程度で自然に回復する短時間のものだと分かった。300msの間隔
+ * ではこの回復を待つには短すぎたため、5秒に延ばして再試行の成功率を上げる。
  */
 private suspend fun <T> withTimeoutRetry(description: String, block: suspend () -> T): T {
     try {
         return block()
     } catch (e: HttpRequestTimeoutException) {
         logger.warn("$description timed out on first attempt, retrying once: ${e.message}")
-        delay(300)
+        delay(5_000)
         return block()
     }
 }
