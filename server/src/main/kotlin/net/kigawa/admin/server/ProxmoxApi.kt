@@ -22,8 +22,18 @@ private val logger = LoggerFactory.getLogger("ProxmoxApi")
 // system-proxmoxのExternalName Service(proxmox-service)はexternalNameに生IPを設定して
 // いるため、DNS仕様上CNAMEとして解決できずCoreDNSからNXDOMAINが返る(要修正はこのリポジトリの
 // 範囲外)。回避策としてそのIPを直接指定する。
+//
+// 接続先はhost4(192.168.1.40)ではなくhost1(192.168.1.10)を指定している。Proxmoxは
+// クラスタ内のどのノードのpveproxyに接続しても同じクラスタ全体のデータ(pmxcfs経由で
+// レプリケートされている)が返るが、host4はゲストVM(特にk8s-worker4)による慢性的な
+// CPU逼迫で自身のpveproxy/pvedaemonの応答が断続的に20秒以上遅延することを実機で確認
+// した。host1はCPUに余裕があり(load average 2前後)、同じ`nodes`一覧を1秒未満で返す
+// ため、host4に直接繋ぐより大幅に安定する。ノード個別のqemu呼び出し(例:
+// nodes/host4/qemu)はhost1のpveproxyがhost4へ内部的にプロキシするため引き続き
+// host4自体の遅さの影響を受けるが、最も頻繁に失敗していた`nodes`一覧取得はこれで
+// 解消される見込み。
 private val proxmoxApiUrl =
-    System.getenv("PROXMOX_API_URL") ?: "https://192.168.1.40:8006"
+    System.getenv("PROXMOX_API_URL") ?: "https://192.168.1.10:8006"
 private val proxmoxTokenId = System.getenv("PROXMOX_API_TOKEN_ID")
 private val proxmoxTokenSecret = System.getenv("PROXMOX_API_TOKEN_SECRET")
 
