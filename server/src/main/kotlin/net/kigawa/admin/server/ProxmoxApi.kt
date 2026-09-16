@@ -106,16 +106,15 @@ private fun buildProxmoxHttpClient(): HttpClient {
             https {
                 trustManager = trustAllManager
             }
-            // このクライアントはnodes呼び出し→(間に別のK8s API呼び出しを挟んで)→
-            // オンラインホストごとのqemu呼び出し、と1回のfetchInfrastructureTopology()
-            // 内で複数回・時間差のあるリクエストに使い回される。keep-alive接続プールの
-            // デフォルト動作のままだと、間に挟まる呼び出しの分だけ空いた時間でProxmox側
-            // (または経路上)がコネクションを閉じてしまい、使い回された古い接続への
-            // 書き込みでEOFException("Not enough data available")が発生していた
-            // (実機ログで確認)。keepAliveTimeを0にして接続の使い回し自体を無効化し、
-            // 毎回新規にTCP/TLS接続を張るようにする。
-            endpoint.keepAliveTime = 0
-            endpoint.pipelineMaxSize = 1
+            // 以前ここでendpoint.keepAliveTime = 0を設定し、接続の使い回し(keep-alive)
+            // 自体を無効化しようとしていた。しかしKtor CIOの実装(ConnectionPipeline.kt)
+            // を確認したところ、keepAliveTimeは内部で
+            // `withTimeoutOrNull(keepAliveTime) { tasks.receive() }`という形で
+            // リクエスト処理ループ自体の待機タイムアウトとして使われており、0を渡すと
+            // このタイムアウトが実質ゼロになって正常にリクエストを処理できなくなる
+            // (=接続の使い回しどころか、単発のリクエスト処理自体が不安定になる)ことが
+            // 判明した。実機で見えていたEOFException/タイムアウトの一部は、Proxmox側では
+            // なくこの設定自体が原因だった可能性が高い。デフォルト値(5000ms)に戻す。
         }
         install(ClientContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
