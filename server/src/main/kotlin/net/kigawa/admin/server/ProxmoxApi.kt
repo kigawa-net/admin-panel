@@ -61,6 +61,27 @@ data class ProxmoxVmDto(
 )
 
 @Serializable
+data class ProxmoxCpuInfoDto(
+    val model: String? = null,
+    val sockets: Int? = null,
+    val cores: Int? = null
+)
+
+@Serializable
+data class ProxmoxRootfsDto(
+    val total: Long? = null,
+    val used: Long? = null
+)
+
+@Serializable
+data class ProxmoxNodeStatusDto(
+    val cpuinfo: ProxmoxCpuInfoDto? = null,
+    val kversion: String? = null,
+    val pveversion: String? = null,
+    val rootfs: ProxmoxRootfsDto? = null
+)
+
+@Serializable
 data class InfraVmDto(
     val vmid: Int,
     val name: String,
@@ -76,6 +97,15 @@ data class InfraHostDto(
     val online: Boolean,
     val cpuCores: Int? = null,
     val memoryBytes: Long? = null,
+    /** 以下はnodes/{node}/statusから取得する詳細なハードウェア情報。オフラインノードや
+     * 取得失敗時はnullのままで、既存のcpuCores/memoryBytesのみの表示にフォールバックする。 */
+    val cpuModel: String? = null,
+    val cpuSockets: Int? = null,
+    val cpuPhysicalCores: Int? = null,
+    val kernelVersion: String? = null,
+    val pveVersion: String? = null,
+    val rootfsTotalBytes: Long? = null,
+    val rootfsUsedBytes: Long? = null,
     val vms: List<InfraVmDto> = emptyList()
 )
 
@@ -215,11 +245,36 @@ suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
                 )
             }
 
+            // ハードウェア詳細(CPUモデル・カーネル/PVEバージョン・rootfs)はnodes一覧には
+            // 含まれないため、ノードごとにstatusを追加で取得する。取得失敗時は既存の
+            // cpuCores/memoryBytesのみの表示にフォールバックし、ページ全体は失敗させない。
+            val hwStatus = if (node.status == "online") {
+                try {
+                    withTimeoutRetry("Proxmox status fetch for node ${node.node}") {
+                        client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/status") {
+                            header("Authorization", auth)
+                        }.body<ProxmoxEnvelope<ProxmoxNodeStatusDto>>().data
+                    }
+                } catch (e: Exception) {
+                    logger.warn("Proxmox status fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}", e)
+                    null
+                }
+            } else {
+                null
+            }
+
             InfraHostDto(
                 name = node.node,
                 online = node.status == "online",
                 cpuCores = node.maxcpu,
                 memoryBytes = node.maxmem,
+                cpuModel = hwStatus?.cpuinfo?.model,
+                cpuSockets = hwStatus?.cpuinfo?.sockets,
+                cpuPhysicalCores = hwStatus?.cpuinfo?.cores,
+                kernelVersion = hwStatus?.kversion,
+                pveVersion = hwStatus?.pveversion,
+                rootfsTotalBytes = hwStatus?.rootfs?.total,
+                rootfsUsedBytes = hwStatus?.rootfs?.used,
                 vms = infraVms
             )
         }

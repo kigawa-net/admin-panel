@@ -165,6 +165,32 @@ private fun HostCard(host: InfraHost) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            if (host.cpuModel != null) {
+                Text(
+                    buildString {
+                        append(host.cpuModel)
+                        if (host.cpuSockets != null && host.cpuPhysicalCores != null) {
+                            append(" (${host.cpuSockets}ソケット × ${host.cpuPhysicalCores}コア)")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (host.rootfsTotalBytes != null) {
+                Text(
+                    "ディスク: ${formatBytesAsGiB(host.rootfsUsedBytes)} / ${formatBytesAsGiB(host.rootfsTotalBytes)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (host.pveVersion != null || host.kernelVersion != null) {
+                Text(
+                    "PVE: ${host.pveVersion ?: "-"} / Kernel: ${host.kernelVersion ?: "-"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
             if (host.vms.isEmpty()) {
                 Text(

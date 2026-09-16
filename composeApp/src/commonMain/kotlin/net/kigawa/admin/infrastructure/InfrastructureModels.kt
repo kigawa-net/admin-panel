@@ -19,6 +19,13 @@ data class InfraHost(
     val online: Boolean,
     val cpuCores: Int? = null,
     val memoryBytes: Long? = null,
+    val cpuModel: String? = null,
+    val cpuSockets: Int? = null,
+    val cpuPhysicalCores: Int? = null,
+    val kernelVersion: String? = null,
+    val pveVersion: String? = null,
+    val rootfsTotalBytes: Long? = null,
+    val rootfsUsedBytes: Long? = null,
     val vms: List<InfraVm> = emptyList()
 )
 
