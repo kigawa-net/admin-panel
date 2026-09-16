@@ -128,9 +128,20 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.px)) {
                                     SpanText(node.name, modifier = Modifier.fontWeight(FontWeight.Bold))
                                     SpanText(roleLabel(node.role), modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small))
+                                    // Proxmox VM化されていない物理ノードにはInfraHostDtoのような
+                                    // ディスク/PCI型番情報は無い(Proxmox管理外のため)が、K8sの
+                                    // Node APIが返すハードウェア/バージョン情報はここで表示できる。
+                                    SpanText(
+                                        "CPU: ${node.cpuCapacity} / メモリ: ${node.memoryCapacity}",
+                                        modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                                    )
+                                    SpanText(
+                                        "OS: ${node.osImage} / Kubelet: ${node.kubeletVersion}",
+                                        modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                                    )
                                 }
                                 ReadyBadge(node.ready)
                             }
