@@ -191,6 +191,30 @@ private fun HostCard(host: InfraHost) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            if (host.disks.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("ディスク型番", style = MaterialTheme.typography.labelMedium)
+                    host.disks.forEach { disk ->
+                        Text(
+                            "${disk.model}(${disk.type} / ${formatBytesAsGiB(disk.sizeBytes)}${disk.health?.let { " / $it" } ?: ""})",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            if (host.pciDevices.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("拡張デバイス", style = MaterialTheme.typography.labelMedium)
+                    host.pciDevices.forEach { device ->
+                        Text(
+                            "${device.vendor?.let { "$it " } ?: ""}${device.name}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
 
             if (host.vms.isEmpty()) {
                 Text(

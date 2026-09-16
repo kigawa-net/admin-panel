@@ -190,6 +190,28 @@ private fun HostCard(host: InfraHost) {
                 modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
             )
         }
+        if (host.disks.isNotEmpty()) {
+            Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
+                SpanText("ディスク型番", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
+                host.disks.forEach { disk ->
+                    SpanText(
+                        "${disk.model}(${disk.type} / ${formatBytesAsGiB(disk.sizeBytes)}${disk.health?.let { " / $it" } ?: ""})",
+                        modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                    )
+                }
+            }
+        }
+        if (host.pciDevices.isNotEmpty()) {
+            Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
+                SpanText("拡張デバイス", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
+                host.pciDevices.forEach { device ->
+                    SpanText(
+                        "${device.vendor?.let { "$it " } ?: ""}${device.name}",
+                        modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                    )
+                }
+            }
+        }
 
         if (host.vms.isEmpty()) {
             SpanText(

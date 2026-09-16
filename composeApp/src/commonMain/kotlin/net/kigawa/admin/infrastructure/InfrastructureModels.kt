@@ -14,6 +14,21 @@ data class InfraVm(
 )
 
 @Serializable
+data class InfraDisk(
+    val devpath: String,
+    val model: String,
+    val type: String,
+    val sizeBytes: Long? = null,
+    val health: String? = null
+)
+
+@Serializable
+data class InfraPciDevice(
+    val name: String,
+    val vendor: String? = null
+)
+
+@Serializable
 data class InfraHost(
     val name: String,
     val online: Boolean,
@@ -26,6 +41,8 @@ data class InfraHost(
     val pveVersion: String? = null,
     val rootfsTotalBytes: Long? = null,
     val rootfsUsedBytes: Long? = null,
+    val disks: List<InfraDisk> = emptyList(),
+    val pciDevices: List<InfraPciDevice> = emptyList(),
     val vms: List<InfraVm> = emptyList()
 )
 
