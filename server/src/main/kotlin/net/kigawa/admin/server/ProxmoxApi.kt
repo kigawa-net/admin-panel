@@ -14,6 +14,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
+import java.io.IOException
 import java.security.cert.X509Certificate
 import javax.net.ssl.X509TrustManager
 
@@ -146,12 +147,18 @@ private fun authHeader(): String? {
  * 「20秒タイムアウトの直後(数十秒以内)には正常応答に戻っている」ことを繰り返し確認して
  * おり、host4側の瞬断は数十秒程度で自然に回復する短時間のものだと分かった。300msの間隔
  * ではこの回復を待つには短すぎたため、5秒に延ばして再試行の成功率を上げる。
+ *
+ * java.io.EOFException(接続が応答途中で切断される)も同様に一過性の事象として実機で
+ * 確認されているが、これまでHttpRequestTimeoutExceptionのみをリトライ対象としており
+ * EOFExceptionは初回失敗時点で即座に諦めてしまっていた。IOException全般を対象に含める
+ * ことでこの抜け穴を塞ぐ。
  */
 private suspend fun <T> withTimeoutRetry(description: String, block: suspend () -> T): T {
     try {
         return block()
-    } catch (e: HttpRequestTimeoutException) {
-        logger.warn("$description timed out on first attempt, retrying once: ${e.message}")
+    } catch (e: Exception) {
+        if (e !is HttpRequestTimeoutException && e !is IOException) throw e
+        logger.warn("$description failed on first attempt, retrying once: ${e::class.qualifiedName}: ${e.message}")
         delay(5_000)
         return block()
     }
