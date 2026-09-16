@@ -81,6 +81,41 @@ data class ProxmoxNodeStatusDto(
     val rootfs: ProxmoxRootfsDto? = null
 )
 
+/** rpm/wearoutはディスク種別によって数値/"N/A"文字列が混在して返るためあえて含めない
+ * (kotlinx.serializationで型が固定のフィールドとして扱えず、一覧全体のデシリアライズが
+ * 失敗してしまうため)。型番の把握に必要な項目のみ抽出する。 */
+@Serializable
+data class ProxmoxDiskDto(
+    val devpath: String? = null,
+    val model: String? = null,
+    val vendor: String? = null,
+    val type: String? = null,
+    val size: Long? = null,
+    val health: String? = null
+)
+
+@Serializable
+data class ProxmoxPciDeviceDto(
+    @SerialName("device_name") val deviceName: String? = null,
+    @SerialName("vendor_name") val vendorName: String? = null,
+    @SerialName("class") val pciClass: String? = null
+)
+
+@Serializable
+data class InfraDiskDto(
+    val devpath: String,
+    val model: String,
+    val type: String,
+    val sizeBytes: Long?,
+    val health: String?
+)
+
+@Serializable
+data class InfraPciDeviceDto(
+    val name: String,
+    val vendor: String?
+)
+
 @Serializable
 data class InfraVmDto(
     val vmid: Int,
@@ -106,6 +141,12 @@ data class InfraHostDto(
     val pveVersion: String? = null,
     val rootfsTotalBytes: Long? = null,
     val rootfsUsedBytes: Long? = null,
+    /** ディスク型番一覧(nodes/{node}/disks/list)。取得失敗時は空リスト。 */
+    val disks: List<InfraDiskDto> = emptyList(),
+    /** 搭載済み拡張PCIデバイス一覧(nodes/{node}/hardware/pci)。チップセット内蔵の
+     * コントローラ類は多すぎて有用でないため、ネットワーク/ストレージ/GPU相当の
+     * デバイスのみに絞り込んで返す。取得失敗時は空リスト。 */
+    val pciDevices: List<InfraPciDeviceDto> = emptyList(),
     val vms: List<InfraVmDto> = emptyList()
 )
 
@@ -263,6 +304,57 @@ suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
                 null
             }
 
+            // ディスク型番・搭載PCIデバイスは変化の少ない付随情報であり、既に1ノードあたり
+            // qemu/statusの2呼び出しが乗っている中でこれ以上リトライ付きの呼び出しを増やす
+            // と最悪ケースの待ち時間が伸びすぎるため、あえてリトライなし・単発タイムアウト
+            // (20秒)のみとし、失敗時は空リストにフォールバックしてページ全体は失敗させない。
+            val disks = if (node.status == "online") {
+                try {
+                    client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/disks/list") {
+                        header("Authorization", auth)
+                    }.body<ProxmoxEnvelope<List<ProxmoxDiskDto>>>().data
+                        .filter { it.model != null && it.devpath != null }
+                        .map { disk ->
+                            InfraDiskDto(
+                                devpath = disk.devpath!!,
+                                model = disk.model!!,
+                                type = disk.type ?: "unknown",
+                                sizeBytes = disk.size,
+                                health = disk.health
+                            )
+                        }
+                } catch (e: Exception) {
+                    logger.warn("Proxmox disks fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}")
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+
+            val pciDevices = if (node.status == "online") {
+                try {
+                    client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/hardware/pci") {
+                        header("Authorization", auth)
+                    }.body<ProxmoxEnvelope<List<ProxmoxPciDeviceDto>>>().data
+                        // チップセット内蔵のUSB/SMBus/Thermal等のコントローラは大量にあり
+                        // 有用でないため、ネットワーク(0x02)・ストレージ(0x0108のNVMe含む)・
+                        // ディスプレイ(0x03)クラスのデバイスのみに絞り込む。
+                        .filter { device ->
+                            val cls = device.pciClass?.removePrefix("0x") ?: return@filter false
+                            cls.startsWith("02") || cls.startsWith("03") || cls.startsWith("0108")
+                        }
+                        .mapNotNull { device ->
+                            val name = device.deviceName ?: return@mapNotNull null
+                            InfraPciDeviceDto(name = name, vendor = device.vendorName)
+                        }
+                } catch (e: Exception) {
+                    logger.warn("Proxmox PCI fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}")
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+
             InfraHostDto(
                 name = node.node,
                 online = node.status == "online",
@@ -275,6 +367,8 @@ suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
                 pveVersion = hwStatus?.pveversion,
                 rootfsTotalBytes = hwStatus?.rootfs?.total,
                 rootfsUsedBytes = hwStatus?.rootfs?.used,
+                disks = disks,
+                pciDevices = pciDevices,
                 vms = infraVms
             )
         }
