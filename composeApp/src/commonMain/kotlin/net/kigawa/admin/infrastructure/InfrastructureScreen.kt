@@ -123,10 +123,24 @@ fun InfrastructureScreen(accessToken: String, onBack: () -> Unit) {
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Column {
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                             Text(node.name, style = MaterialTheme.typography.titleSmall)
                                             Text(
                                                 roleLabel(node.role),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            // Proxmox VM化されていない物理ノードにはInfraHostの
+                                            // ようなディスク/PCI型番情報は無い(Proxmox管理外の
+                                            // ため)が、K8sのNode APIが返すハードウェア/バージョン
+                                            // 情報はここで表示できる。
+                                            Text(
+                                                "CPU: ${node.cpuCapacity} / メモリ: ${node.memoryCapacity}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                "OS: ${node.osImage} / Kubelet: ${node.kubeletVersion}",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
