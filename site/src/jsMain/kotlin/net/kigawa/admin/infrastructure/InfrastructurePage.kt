@@ -167,6 +167,29 @@ private fun HostCard(host: InfraHost) {
                 modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
             )
         }
+        if (host.cpuModel != null) {
+            SpanText(
+                buildString {
+                    append(host.cpuModel)
+                    if (host.cpuSockets != null && host.cpuPhysicalCores != null) {
+                        append(" (${host.cpuSockets}ソケット × ${host.cpuPhysicalCores}コア)")
+                    }
+                },
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
+        }
+        if (host.rootfsTotalBytes != null) {
+            SpanText(
+                "ディスク: ${formatBytesAsGiB(host.rootfsUsedBytes)} / ${formatBytesAsGiB(host.rootfsTotalBytes)}",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
+        }
+        if (host.pveVersion != null || host.kernelVersion != null) {
+            SpanText(
+                "PVE: ${host.pveVersion ?: "-"} / Kernel: ${host.kernelVersion ?: "-"}",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
+        }
 
         if (host.vms.isEmpty()) {
             SpanText(
