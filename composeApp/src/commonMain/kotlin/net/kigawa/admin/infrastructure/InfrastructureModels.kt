@@ -28,6 +28,8 @@ data class InfraPciDevice(
     val vendor: String? = null
 )
 
+/** ホストの基本情報+ハードウェア情報のみ(高速パス、/api/infrastructure)。VM/ディスク/PCIの
+ * 詳細はInfraHostDetails(/api/infrastructure/details)側で非同期に読み込む。 */
 @Serializable
 data class InfraHost(
     val name: String,
@@ -40,17 +42,26 @@ data class InfraHost(
     val kernelVersion: String? = null,
     val pveVersion: String? = null,
     val rootfsTotalBytes: Long? = null,
-    val rootfsUsedBytes: Long? = null,
-    val disks: List<InfraDisk> = emptyList(),
-    val pciDevices: List<InfraPciDevice> = emptyList(),
-    val vms: List<InfraVm> = emptyList()
+    val rootfsUsedBytes: Long? = null
 )
 
 @Serializable
 data class InfrastructureTopology(
     val proxmoxConfigured: Boolean,
     val proxmoxReachable: Boolean = true,
-    val hosts: List<InfraHost> = emptyList(),
+    val hosts: List<InfraHost> = emptyList()
+)
+
+@Serializable
+data class InfraHostDetails(
+    val disks: List<InfraDisk> = emptyList(),
+    val pciDevices: List<InfraPciDevice> = emptyList(),
+    val vms: List<InfraVm> = emptyList()
+)
+
+@Serializable
+data class InfrastructureDetails(
+    val hostDetails: Map<String, InfraHostDetails> = emptyMap(),
     val standaloneNodes: List<ServerStatus> = emptyList()
 )
 

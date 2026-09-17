@@ -45,6 +45,10 @@ private sealed class InfrastructureUiState {
 @Composable
 fun InfrastructureScreen(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<InfrastructureUiState>(InfrastructureUiState.Loading) }
+    // ホスト一覧(/api/infrastructure)より後から、VM/ディスク/PCIの詳細
+    // (/api/infrastructure/details)を非同期に読み込む。読み込み中はnullのままにし、
+    // 「まだ届いていない」ことと「届いたが空だった」ことを区別する。
+    var details by remember { mutableStateOf<InfrastructureDetails?>(null) }
     var refreshKey by remember { mutableStateOf(0) }
     val httpClient = remember { createHttpClient() }
 
@@ -55,10 +59,20 @@ fun InfrastructureScreen(accessToken: String, onBack: () -> Unit) {
     val currentAccessToken by rememberUpdatedState(accessToken)
 
     LaunchedEffect(refreshKey) {
-        state = try {
-            InfrastructureUiState.Loaded(fetchInfrastructureTopology(httpClient, currentAccessToken))
+        details = null
+        val topology = try {
+            fetchInfrastructureTopology(httpClient, currentAccessToken)
         } catch (e: Exception) {
-            InfrastructureUiState.Error("インフラ構成を取得できませんでした")
+            state = InfrastructureUiState.Error("インフラ構成を取得できませんでした")
+            return@LaunchedEffect
+        }
+        // まずホスト一覧(高速パス)だけで画面を表示し、続けてVM/ディスク/PCIの詳細を
+        // 非同期に読み込む。詳細取得が遅延・失敗してもホスト一覧の表示自体は妨げない。
+        state = InfrastructureUiState.Loaded(topology)
+        details = try {
+            fetchInfrastructureDetails(httpClient, currentAccessToken)
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -94,21 +108,31 @@ fun InfrastructureScreen(accessToken: String, onBack: () -> Unit) {
                         onRetry = { refreshKey++ },
                         modifier = Modifier.align(Alignment.Center).padding(16.dp)
                     )
-                } else if (current.topology.hosts.isEmpty() && current.topology.standaloneNodes.isEmpty()) {
+                } else if (current.topology.hosts.isEmpty() && details != null && details!!.standaloneNodes.isEmpty()) {
                     Text(
                         text = "物理ホスト・ノードが見つかりませんでした",
                         modifier = Modifier.align(Alignment.Center).padding(24.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
+                    val currentDetails = details
                     LazyColumn(
                         modifier = Modifier.fillMaxSize().padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         items(current.topology.hosts) { host ->
-                            HostCard(host)
+                            HostCard(host, currentDetails?.hostDetails?.get(host.name))
                         }
-                        if (current.topology.standaloneNodes.isNotEmpty()) {
+                        if (currentDetails == null) {
+                            item {
+                                Text(
+                                    text = "詳細情報を読み込み中...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        } else if (currentDetails.standaloneNodes.isNotEmpty()) {
                             item {
                                 Text(
                                     text = "物理専用ノード(VM化されていないK8sノード)",
@@ -116,7 +140,7 @@ fun InfrastructureScreen(accessToken: String, onBack: () -> Unit) {
                                     modifier = Modifier.padding(top = 8.dp)
                                 )
                             }
-                            items(current.topology.standaloneNodes) { node ->
+                            items(currentDetails.standaloneNodes) { node ->
                                 Card(modifier = Modifier.fillMaxWidth()) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -158,7 +182,7 @@ fun InfrastructureScreen(accessToken: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun HostCard(host: InfraHost) {
+private fun HostCard(host: InfraHost, details: InfraHostDetails?) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -205,40 +229,48 @@ private fun HostCard(host: InfraHost) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (host.disks.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("ディスク型番", style = MaterialTheme.typography.labelMedium)
-                    host.disks.forEach { disk ->
-                        Text(
-                            "${disk.model}(${disk.type} / ${formatBytesAsGiB(disk.sizeBytes)}${disk.health?.let { " / $it" } ?: ""})",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-            if (host.pciDevices.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("拡張デバイス", style = MaterialTheme.typography.labelMedium)
-                    host.pciDevices.forEach { device ->
-                        Text(
-                            "${device.vendor?.let { "$it " } ?: ""}${device.name}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-
-            if (host.vms.isEmpty()) {
+            if (details == null) {
                 Text(
-                    if (host.online) "稼働中のVMはありません" else "オフラインのため不明",
+                    "詳細情報を読み込み中...",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    host.vms.forEach { vm -> VmRow(vm) }
+                if (details.disks.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("ディスク型番", style = MaterialTheme.typography.labelMedium)
+                        details.disks.forEach { disk ->
+                            Text(
+                                "${disk.model}(${disk.type} / ${formatBytesAsGiB(disk.sizeBytes)}${disk.health?.let { " / $it" } ?: ""})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                if (details.pciDevices.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("拡張デバイス", style = MaterialTheme.typography.labelMedium)
+                        details.pciDevices.forEach { device ->
+                            Text(
+                                "${device.vendor?.let { "$it " } ?: ""}${device.name}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                if (details.vms.isEmpty()) {
+                    Text(
+                        if (host.online) "稼働中のVMはありません" else "オフラインのため不明",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        details.vms.forEach { vm -> VmRow(vm) }
+                    }
                 }
             }
         }
