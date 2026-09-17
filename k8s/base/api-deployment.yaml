@@ -15,6 +15,19 @@ spec:
         app: admin-panel-api
     spec:
       serviceAccountName: admin-panel-api
+      # 2レプリカが同一ノードに配置されると、そのノードが他テナントの重いワークロード
+      # (DB・ゲームサーバー等)でI/O逼迫した際に両レプリカが同時に影響を受け、Proxmox
+      # 接続が両方とも同時にタイムアウトする事象を実機で確認した(k8s-worker3、
+      # iowait 36.6%・load average 78を記録)。可能な限り別ノードに分散させる。
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: admin-panel-api
+                topologyKey: kubernetes.io/hostname
       containers:
         - name: admin-panel-api
           image: harbor.kigawa.net/library/admin-panel-api:latest
