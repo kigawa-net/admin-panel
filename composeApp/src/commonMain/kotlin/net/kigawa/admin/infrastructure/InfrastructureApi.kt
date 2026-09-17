@@ -14,3 +14,9 @@ suspend fun fetchInfrastructureTopology(client: HttpClient, accessToken: String)
         bearerAuth(accessToken)
     }.body()
 }
+
+suspend fun fetchInfrastructureDetails(client: HttpClient, accessToken: String): InfrastructureDetails {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/details") {
+        bearerAuth(accessToken)
+    }.body()
+}

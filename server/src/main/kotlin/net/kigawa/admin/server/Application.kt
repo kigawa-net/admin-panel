@@ -562,14 +562,27 @@ fun Application.module() {
             }
         }
 
-        // 物理ホスト(Proxmox)とVM(K8sノードを含む)の対応関係。管理者限定。
+        // 物理ホスト(Proxmox)一覧+ハードウェア情報。管理者限定。VM/ディスク/PCI等の詳細は
+        // 呼び出し回数が多く遅くなりがちなため/api/infrastructure/detailsに分離しており、
+        // クライアントはこちらを先に表示してから詳細を非同期に読み込む。
         get("/api/infrastructure") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
             if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
                 return@get
             }
-            call.respond(fetchInfrastructureTopology())
+            call.respond(fetchInfrastructureHosts())
+        }
+
+        // 物理ホストごとのVM一覧・ディスク・PCIデバイス詳細、およびVMとして見つからなかった
+        // K8sノード(物理専用ノード)一覧。管理者限定。
+        get("/api/infrastructure/details") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            call.respond(fetchInfrastructureDetails())
         }
 
         // GitHub App (kigawa-net, app_id 4316503) operation: mint scoped installation tokens

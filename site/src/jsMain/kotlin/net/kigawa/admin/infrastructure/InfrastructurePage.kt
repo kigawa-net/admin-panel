@@ -38,6 +38,10 @@ private sealed class InfrastructureUiState {
 @Composable
 fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<InfrastructureUiState>(InfrastructureUiState.Loading) }
+    // ホスト一覧(/api/infrastructure)より後から、VM/ディスク/PCIの詳細
+    // (/api/infrastructure/details)を非同期に読み込む。読み込み中はnullのままにし、
+    // 「まだ届いていない」ことと「届いたが空だった」ことを区別する。
+    var details by remember { mutableStateOf<InfrastructureDetails?>(null) }
     var refreshKey by remember { mutableStateOf(0) }
     val httpClient = remember {
         HttpClient(Js) {
@@ -57,14 +61,24 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     val currentAccessToken by rememberUpdatedState(accessToken)
 
     LaunchedEffect(refreshKey) {
-        state = try {
-            InfrastructureUiState.Loaded(fetchInfrastructureTopology(httpClient, currentAccessToken))
+        details = null
+        val topology = try {
+            fetchInfrastructureTopology(httpClient, currentAccessToken)
         } catch (e: Throwable) {
             // ktor-client-jsがブラウザのfetch()失敗(CORS・オフライン等)を投げる際、
             // Kotlinのcatch (e: Exception)をすり抜けてコルーチンの未捕捉例外ハンドラに
             // まで届き、ページ全体の描画が白紙になる不具合が実機で確認された。
             // Throwableで受けることで、この描画クラッシュを防ぐ。
-            InfrastructureUiState.Error("インフラ構成を取得できませんでした")
+            state = InfrastructureUiState.Error("インフラ構成を取得できませんでした")
+            return@LaunchedEffect
+        }
+        // まずホスト一覧(高速パス)だけで画面を表示し、続けてVM/ディスク/PCIの詳細を
+        // 非同期に読み込む。詳細取得が遅延・失敗してもホスト一覧の表示自体は妨げない。
+        state = InfrastructureUiState.Loaded(topology)
+        details = try {
+            fetchInfrastructureDetails(httpClient, currentAccessToken)
+        } catch (e: Throwable) {
+            null
         }
     }
 
@@ -108,16 +122,22 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                         "Proxmoxに接続できませんでした。しばらくしてからもう一度お試しください。",
                         onRetry = { refreshKey++ }
                     )
-                } else if (current.topology.hosts.isEmpty() && current.topology.standaloneNodes.isEmpty()) {
+                } else if (current.topology.hosts.isEmpty() && details != null && details!!.standaloneNodes.isEmpty()) {
                     SpanText("物理ホスト・ノードが見つかりませんでした", modifier = Modifier.color(Colors.Gray))
                 } else {
-                    current.topology.hosts.forEach { host -> HostCard(host) }
-                    if (current.topology.standaloneNodes.isNotEmpty()) {
+                    current.topology.hosts.forEach { host -> HostCard(host, details?.hostDetails?.get(host.name)) }
+                    val currentDetails = details
+                    if (currentDetails == null) {
+                        SpanText(
+                            "詳細情報を読み込み中...",
+                            modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small).padding(top = 4.px)
+                        )
+                    } else if (currentDetails.standaloneNodes.isNotEmpty()) {
                         SpanText(
                             "物理専用ノード(VM化されていないK8sノード)",
                             modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium).padding(top = 8.px)
                         )
-                        current.topology.standaloneNodes.forEach { node ->
+                        currentDetails.standaloneNodes.forEach { node ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -154,7 +174,7 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun HostCard(host: InfraHost) {
+private fun HostCard(host: InfraHost, details: InfraHostDetails?) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -201,40 +221,47 @@ private fun HostCard(host: InfraHost) {
                 modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
             )
         }
-        if (host.disks.isNotEmpty()) {
-            Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
-                SpanText("ディスク型番", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
-                host.disks.forEach { disk ->
-                    SpanText(
-                        "${disk.model}(${disk.type} / ${formatBytesAsGiB(disk.sizeBytes)}${disk.health?.let { " / $it" } ?: ""})",
-                        modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-                    )
-                }
-            }
-        }
-        if (host.pciDevices.isNotEmpty()) {
-            Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
-                SpanText("拡張デバイス", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
-                host.pciDevices.forEach { device ->
-                    SpanText(
-                        "${device.vendor?.let { "$it " } ?: ""}${device.name}",
-                        modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-                    )
-                }
-            }
-        }
-
-        if (host.vms.isEmpty()) {
+        if (details == null) {
             SpanText(
-                if (host.online) "稼働中のVMはありません" else "オフラインのため不明",
-                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                "詳細情報を読み込み中...",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small).padding(top = 4.px)
             )
         } else {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.px),
-                verticalArrangement = Arrangement.spacedBy(4.px)
-            ) {
-                host.vms.forEach { vm -> VmRow(vm) }
+            if (details.disks.isNotEmpty()) {
+                Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
+                    SpanText("ディスク型番", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
+                    details.disks.forEach { disk ->
+                        SpanText(
+                            "${disk.model}(${disk.type} / ${formatBytesAsGiB(disk.sizeBytes)}${disk.health?.let { " / $it" } ?: ""})",
+                            modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                        )
+                    }
+                }
+            }
+            if (details.pciDevices.isNotEmpty()) {
+                Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
+                    SpanText("拡張デバイス", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
+                    details.pciDevices.forEach { device ->
+                        SpanText(
+                            "${device.vendor?.let { "$it " } ?: ""}${device.name}",
+                            modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                        )
+                    }
+                }
+            }
+
+            if (details.vms.isEmpty()) {
+                SpanText(
+                    if (host.online) "稼働中のVMはありません" else "オフラインのため不明",
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.px),
+                    verticalArrangement = Arrangement.spacedBy(4.px)
+                ) {
+                    details.vms.forEach { vm -> VmRow(vm) }
+                }
             }
         }
     }

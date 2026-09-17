@@ -9,6 +9,9 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientCon
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -126,6 +129,12 @@ data class InfraVmDto(
     val matchedNode: ServerStatusDto? = null
 )
 
+/**
+ * ホストの基本情報+ハードウェア情報(nodes一覧+ノードごとのstatus呼び出しのみ)。
+ * VM一覧・ディスク・PCIデバイスはさらに呼び出し回数が多く遅くなりがちなため、
+ * InfraHostDetailsDto側に分離し、ページはまずこちらを先に表示してから詳細を
+ * 非同期で読み込めるようにしている。
+ */
 @Serializable
 data class InfraHostDto(
     val name: String,
@@ -140,8 +149,23 @@ data class InfraHostDto(
     val kernelVersion: String? = null,
     val pveVersion: String? = null,
     val rootfsTotalBytes: Long? = null,
-    val rootfsUsedBytes: Long? = null,
-    /** ディスク型番一覧(nodes/{node}/disks/list)。取得失敗時は空リスト。 */
+    val rootfsUsedBytes: Long? = null
+)
+
+@Serializable
+data class InfrastructureTopologyDto(
+    val proxmoxConfigured: Boolean,
+    /** Proxmox APIのトークンは設定されているが、呼び出しが失敗した(到達不能・認証エラー等)場合false。
+     * hostsが空のときにこれで区別しないと、クライアント側で「本当に0台」なのか
+     * 「取得に失敗した」のか判別できず、何も表示されない画面になってしまう。 */
+    val proxmoxReachable: Boolean = true,
+    val hosts: List<InfraHostDto> = emptyList()
+)
+
+/** ホスト名をキーにしたVM/ディスク/PCIデバイスの詳細。取得失敗時は該当ホストのエントリ
+ * ごと欠落する(クライアント側は「読み込み中」のまま扱う)。 */
+@Serializable
+data class InfraHostDetailsDto(
     val disks: List<InfraDiskDto> = emptyList(),
     /** 搭載済み拡張PCIデバイス一覧(nodes/{node}/hardware/pci)。チップセット内蔵の
      * コントローラ類は多すぎて有用でないため、ネットワーク/ストレージ/GPU相当の
@@ -151,13 +175,8 @@ data class InfraHostDto(
 )
 
 @Serializable
-data class InfrastructureTopologyDto(
-    val proxmoxConfigured: Boolean,
-    /** Proxmox APIのトークンは設定されているが、呼び出しが失敗した(到達不能・認証エラー等)場合false。
-     * hosts/standaloneNodesが空のときにこれで区別しないと、クライアント側で「本当に0台」なのか
-     * 「取得に失敗した」のか判別できず、何も表示されない画面になってしまう。 */
-    val proxmoxReachable: Boolean = true,
-    val hosts: List<InfraHostDto> = emptyList(),
+data class InfrastructureDetailsDto(
+    val hostDetails: Map<String, InfraHostDetailsDto> = emptyMap(),
     /** ProxmoxのVMとして見つからなかったK8sノード(独立した物理マシン上で直接動作していると推定される)。 */
     val standaloneNodes: List<ServerStatusDto> = emptyList()
 )
@@ -234,18 +253,25 @@ private suspend fun <T> withTimeoutRetry(description: String, block: suspend () 
     }
 }
 
-/** Proxmoxクラスタの物理ホスト一覧とそこで動くVMを取得し、K8sノード一覧と突き合わせて返す。 */
-suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
+private suspend fun fetchNodes(client: HttpClient, auth: String, description: String): List<ProxmoxNodeDto> =
+    withTimeoutRetry(description) {
+        client.get("$proxmoxApiUrl/api2/json/nodes") {
+            header("Authorization", auth)
+        }.body<ProxmoxEnvelope<List<ProxmoxNodeDto>>>().data
+    }
+
+/**
+ * ホスト一覧+ハードウェア情報のみを取得する高速パス。ページはまずこちらの結果を表示し、
+ * VM/ディスク/PCIデバイスの詳細はfetchInfrastructureDetails()で非同期に取得する。
+ * ノードごとのstatus呼び出しは並列実行し、ノード数が増えても直列に待たされないようにする。
+ */
+suspend fun fetchInfrastructureHosts(): InfrastructureTopologyDto {
     val auth = authHeader() ?: return InfrastructureTopologyDto(proxmoxConfigured = false)
 
     val client = buildProxmoxHttpClient()
     try {
         val nodes = try {
-            withTimeoutRetry("Proxmox nodes fetch") {
-                client.get("$proxmoxApiUrl/api2/json/nodes") {
-                    header("Authorization", auth)
-                }.body<ProxmoxEnvelope<List<ProxmoxNodeDto>>>().data
-            }
+            fetchNodes(client, auth, "Proxmox nodes fetch")
         } catch (e: Exception) {
             // 実機でwget/生JVM HttpsURLConnectionでの再現テストは常に成功するのに対し、
             // このKtor CIOクライアント経由の呼び出しだけが失敗し続けるという原因不明の
@@ -254,129 +280,167 @@ suspend fun fetchInfrastructureTopology(): InfrastructureTopologyDto {
             return InfrastructureTopologyDto(proxmoxConfigured = true, proxmoxReachable = false, hosts = emptyList())
         }
 
-        val k8sNodesByName = fetchServerStatuses()?.servers?.associateBy { it.name } ?: emptyMap()
-        val matchedNodeNames = mutableSetOf<String>()
-
-        val hosts = nodes.sortedBy { it.node }.map { node ->
-            val vms = if (node.status == "online") {
-                try {
-                    withTimeoutRetry("Proxmox qemu fetch for node ${node.node}") {
-                        client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/qemu") {
-                            header("Authorization", auth)
-                        }.body<ProxmoxEnvelope<List<ProxmoxVmDto>>>().data
+        val hosts = coroutineScope {
+            nodes.sortedBy { it.node }.map { node ->
+                async {
+                    // ハードウェア詳細(CPUモデル・カーネル/PVEバージョン・rootfs)はnodes一覧には
+                    // 含まれないため、ノードごとにstatusを追加で取得する。取得失敗時は既存の
+                    // cpuCores/memoryBytesのみの表示にフォールバックし、ページ全体は失敗させない。
+                    val hwStatus = if (node.status == "online") {
+                        try {
+                            withTimeoutRetry("Proxmox status fetch for node ${node.node}") {
+                                client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/status") {
+                                    header("Authorization", auth)
+                                }.body<ProxmoxEnvelope<ProxmoxNodeStatusDto>>().data
+                            }
+                        } catch (e: Exception) {
+                            logger.warn("Proxmox status fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}", e)
+                            null
+                        }
+                    } else {
+                        null
                     }
-                } catch (e: Exception) {
-                    logger.warn("Proxmox qemu fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}", e)
-                    emptyList()
+
+                    InfraHostDto(
+                        name = node.node,
+                        online = node.status == "online",
+                        cpuCores = node.maxcpu,
+                        memoryBytes = node.maxmem,
+                        cpuModel = hwStatus?.cpuinfo?.model,
+                        cpuSockets = hwStatus?.cpuinfo?.sockets,
+                        cpuPhysicalCores = hwStatus?.cpuinfo?.cores,
+                        kernelVersion = hwStatus?.kversion,
+                        pveVersion = hwStatus?.pveversion,
+                        rootfsTotalBytes = hwStatus?.rootfs?.total,
+                        rootfsUsedBytes = hwStatus?.rootfs?.used
+                    )
                 }
-            } else {
-                emptyList()
-            }
-
-            val infraVms = vms.filter { it.status == "running" }.sortedBy { it.name ?: it.vmid.toString() }.map { vm ->
-                val matched = vm.name?.let { k8sNodesByName[it] }
-                if (matched != null) matchedNodeNames += matched.name
-                InfraVmDto(
-                    vmid = vm.vmid,
-                    name = vm.name ?: "vm-${vm.vmid}",
-                    status = vm.status,
-                    cpuCores = vm.cpus,
-                    memoryBytes = vm.maxmem,
-                    matchedNode = matched
-                )
-            }
-
-            // ハードウェア詳細(CPUモデル・カーネル/PVEバージョン・rootfs)はnodes一覧には
-            // 含まれないため、ノードごとにstatusを追加で取得する。取得失敗時は既存の
-            // cpuCores/memoryBytesのみの表示にフォールバックし、ページ全体は失敗させない。
-            val hwStatus = if (node.status == "online") {
-                try {
-                    withTimeoutRetry("Proxmox status fetch for node ${node.node}") {
-                        client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/status") {
-                            header("Authorization", auth)
-                        }.body<ProxmoxEnvelope<ProxmoxNodeStatusDto>>().data
-                    }
-                } catch (e: Exception) {
-                    logger.warn("Proxmox status fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}", e)
-                    null
-                }
-            } else {
-                null
-            }
-
-            // ディスク型番・搭載PCIデバイスは変化の少ない付随情報であり、既に1ノードあたり
-            // qemu/statusの2呼び出しが乗っている中でこれ以上リトライ付きの呼び出しを増やす
-            // と最悪ケースの待ち時間が伸びすぎるため、あえてリトライなし・単発タイムアウト
-            // (20秒)のみとし、失敗時は空リストにフォールバックしてページ全体は失敗させない。
-            val disks = if (node.status == "online") {
-                try {
-                    client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/disks/list") {
-                        header("Authorization", auth)
-                    }.body<ProxmoxEnvelope<List<ProxmoxDiskDto>>>().data
-                        .filter { it.model != null && it.devpath != null }
-                        .map { disk ->
-                            InfraDiskDto(
-                                devpath = disk.devpath!!,
-                                model = disk.model!!,
-                                type = disk.type ?: "unknown",
-                                sizeBytes = disk.size,
-                                health = disk.health
-                            )
-                        }
-                } catch (e: Exception) {
-                    logger.warn("Proxmox disks fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}")
-                    emptyList()
-                }
-            } else {
-                emptyList()
-            }
-
-            val pciDevices = if (node.status == "online") {
-                try {
-                    client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/hardware/pci") {
-                        header("Authorization", auth)
-                    }.body<ProxmoxEnvelope<List<ProxmoxPciDeviceDto>>>().data
-                        // チップセット内蔵のUSB/SMBus/Thermal等のコントローラは大量にあり
-                        // 有用でないため、ネットワーク(0x02)・ストレージ(0x0108のNVMe含む)・
-                        // ディスプレイ(0x03)クラスのデバイスのみに絞り込む。
-                        .filter { device ->
-                            val cls = device.pciClass?.removePrefix("0x") ?: return@filter false
-                            cls.startsWith("02") || cls.startsWith("03") || cls.startsWith("0108")
-                        }
-                        .mapNotNull { device ->
-                            val name = device.deviceName ?: return@mapNotNull null
-                            InfraPciDeviceDto(name = name, vendor = device.vendorName)
-                        }
-                } catch (e: Exception) {
-                    logger.warn("Proxmox PCI fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}")
-                    emptyList()
-                }
-            } else {
-                emptyList()
-            }
-
-            InfraHostDto(
-                name = node.node,
-                online = node.status == "online",
-                cpuCores = node.maxcpu,
-                memoryBytes = node.maxmem,
-                cpuModel = hwStatus?.cpuinfo?.model,
-                cpuSockets = hwStatus?.cpuinfo?.sockets,
-                cpuPhysicalCores = hwStatus?.cpuinfo?.cores,
-                kernelVersion = hwStatus?.kversion,
-                pveVersion = hwStatus?.pveversion,
-                rootfsTotalBytes = hwStatus?.rootfs?.total,
-                rootfsUsedBytes = hwStatus?.rootfs?.used,
-                disks = disks,
-                pciDevices = pciDevices,
-                vms = infraVms
-            )
+            }.awaitAll()
         }
 
-        val standaloneNodes = k8sNodesByName.values.filter { it.name !in matchedNodeNames }.sortedBy { it.name }
-
-        return InfrastructureTopologyDto(proxmoxConfigured = true, hosts = hosts, standaloneNodes = standaloneNodes)
+        return InfrastructureTopologyDto(proxmoxConfigured = true, hosts = hosts)
     } finally {
         client.close()
     }
+}
+
+/**
+ * VM一覧・ディスク・PCIデバイスの詳細をホストごとに並列取得する低速パス。
+ * fetchInfrastructureHosts()とは別のHTTPクライアント/nodes呼び出しを使うため、こちらが
+ * 失敗してもホスト一覧の表示自体には影響しない(該当ホストの詳細が空のまま残るのみ)。
+ */
+suspend fun fetchInfrastructureDetails(): InfrastructureDetailsDto {
+    val auth = authHeader() ?: return InfrastructureDetailsDto()
+
+    val client = buildProxmoxHttpClient()
+    try {
+        val nodes = try {
+            fetchNodes(client, auth, "Proxmox nodes fetch (details)")
+        } catch (e: Exception) {
+            logger.warn("Proxmox nodes fetch failed (details): ${e::class.qualifiedName}: ${e.message}", e)
+            return InfrastructureDetailsDto()
+        }
+
+        val k8sNodesByName = fetchServerStatuses()?.servers?.associateBy { it.name } ?: emptyMap()
+
+        val hostDetailsList = coroutineScope {
+            nodes.filter { it.status == "online" }.map { node ->
+                async {
+                    node.node to fetchHostDetails(client, auth, node.node, k8sNodesByName)
+                }
+            }.awaitAll()
+        }
+
+        val matchedNodeNames = hostDetailsList
+            .flatMap { (_, details) -> details.vms }
+            .mapNotNull { it.matchedNode?.name }
+            .toSet()
+        val standaloneNodes = k8sNodesByName.values.filter { it.name !in matchedNodeNames }.sortedBy { it.name }
+
+        return InfrastructureDetailsDto(hostDetails = hostDetailsList.toMap(), standaloneNodes = standaloneNodes)
+    } finally {
+        client.close()
+    }
+}
+
+private suspend fun fetchHostDetails(
+    client: HttpClient,
+    auth: String,
+    nodeName: String,
+    k8sNodesByName: Map<String, ServerStatusDto>
+): InfraHostDetailsDto = coroutineScope {
+    val vmsDeferred = async {
+        try {
+            withTimeoutRetry("Proxmox qemu fetch for node $nodeName") {
+                client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/qemu") {
+                    header("Authorization", auth)
+                }.body<ProxmoxEnvelope<List<ProxmoxVmDto>>>().data
+            }
+        } catch (e: Exception) {
+            logger.warn("Proxmox qemu fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    // ディスク型番・搭載PCIデバイスは変化の少ない付随情報のため、あえてリトライなし・
+    // 単発タイムアウト(20秒)のみとし、失敗時は空リストにフォールバックする。
+    val disksDeferred = async {
+        try {
+            client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/disks/list") {
+                header("Authorization", auth)
+            }.body<ProxmoxEnvelope<List<ProxmoxDiskDto>>>().data
+                .filter { it.model != null && it.devpath != null }
+                .map { disk ->
+                    InfraDiskDto(
+                        devpath = disk.devpath!!,
+                        model = disk.model!!,
+                        type = disk.type ?: "unknown",
+                        sizeBytes = disk.size,
+                        health = disk.health
+                    )
+                }
+        } catch (e: Exception) {
+            logger.warn("Proxmox disks fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}")
+            emptyList()
+        }
+    }
+
+    val pciDeferred = async {
+        try {
+            client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/hardware/pci") {
+                header("Authorization", auth)
+            }.body<ProxmoxEnvelope<List<ProxmoxPciDeviceDto>>>().data
+                // チップセット内蔵のUSB/SMBus/Thermal等のコントローラは大量にあり
+                // 有用でないため、ネットワーク(0x02)・ストレージ(0x0108のNVMe含む)・
+                // ディスプレイ(0x03)クラスのデバイスのみに絞り込む。
+                .filter { device ->
+                    val cls = device.pciClass?.removePrefix("0x") ?: return@filter false
+                    cls.startsWith("02") || cls.startsWith("03") || cls.startsWith("0108")
+                }
+                .mapNotNull { device ->
+                    val name = device.deviceName ?: return@mapNotNull null
+                    InfraPciDeviceDto(name = name, vendor = device.vendorName)
+                }
+        } catch (e: Exception) {
+            logger.warn("Proxmox PCI fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}")
+            emptyList()
+        }
+    }
+
+    val vms = vmsDeferred.await()
+        .filter { it.status == "running" }
+        .sortedBy { it.name ?: it.vmid.toString() }
+        .map { vm ->
+            val matched = vm.name?.let { k8sNodesByName[it] }
+            InfraVmDto(
+                vmid = vm.vmid,
+                name = vm.name ?: "vm-${vm.vmid}",
+                status = vm.status,
+                cpuCores = vm.cpus,
+                memoryBytes = vm.maxmem,
+                matchedNode = matched
+            )
+        }
+
+    InfraHostDetailsDto(disks = disksDeferred.await(), pciDevices = pciDeferred.await(), vms = vms)
 }
