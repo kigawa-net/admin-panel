@@ -311,6 +311,15 @@ private fun ServerCard(
             }
             Text(roleLabel(server.role), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("CPU: ${server.cpuCapacity} コア / メモリ: ${formatMemoryCapacity(server.memoryCapacity)}", style = MaterialTheme.typography.bodySmall)
+            val cpuUsageText = formatCpuUsage(server.cpuUsageCores, server.cpuCapacity)
+            val memoryUsageText = formatMemoryUsage(server.memoryUsageBytes, server.memoryCapacity)
+            if (cpuUsageText != null || memoryUsageText != null) {
+                Text(
+                    "使用中 — CPU: ${cpuUsageText ?: "-"} / メモリ: ${memoryUsageText ?: "-"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             val podText = if (server.podCount != null && server.podCapacity != null) {
                 "Pod: ${server.podCount} / ${server.podCapacity}"
             } else {

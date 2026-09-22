@@ -294,6 +294,14 @@ private fun ServerCard(
         }
         SpanText(roleLabel(server.role), modifier = Modifier.color(Colors.Gray))
         SpanText("CPU: ${server.cpuCapacity} コア / メモリ: ${formatMemoryCapacity(server.memoryCapacity)}")
+        val cpuUsageText = formatCpuUsage(server.cpuUsageCores, server.cpuCapacity)
+        val memoryUsageText = formatMemoryUsage(server.memoryUsageBytes, server.memoryCapacity)
+        if (cpuUsageText != null || memoryUsageText != null) {
+            SpanText(
+                "使用中 — CPU: ${cpuUsageText ?: "-"} / メモリ: ${memoryUsageText ?: "-"}",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
+        }
         val podText = if (server.podCount != null && server.podCapacity != null) {
             "Pod: ${server.podCount} / ${server.podCapacity}"
         } else {
