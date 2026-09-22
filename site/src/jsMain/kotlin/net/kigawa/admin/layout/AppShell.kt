@@ -22,7 +22,6 @@ private data class NavItem(val label: String, val path: String, val adminOnly: B
 private val NAV_ITEMS = listOf(
     NavItem("ダッシュボード", "/"),
     NavItem("ネットワークマップ", "/network-map"),
-    NavItem("サーバー管理", "/servers", adminOnly = true),
     NavItem("ユーザー管理", "/users", adminOnly = true),
     NavItem("組織管理", "/organizations"),
     NavItem("インフラ構成", "/infrastructure", adminOnly = true),

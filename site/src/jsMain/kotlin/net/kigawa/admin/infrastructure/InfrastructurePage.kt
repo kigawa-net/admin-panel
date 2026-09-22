@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import com.varabyte.kobweb.compose.css.FontSize
@@ -22,9 +23,25 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.js.Js
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.browser.window
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import net.kigawa.admin.common.ErrorStateWithRetry
-import net.kigawa.admin.servers.roleLabel
+import net.kigawa.admin.servers.ActionResult
+import net.kigawa.admin.servers.PENDING_OPERATION_POLL_INTERVAL_MS
+import net.kigawa.admin.servers.PendingOperation
+import net.kigawa.admin.servers.PendingOperationState
+import net.kigawa.admin.servers.ServerCard
+import net.kigawa.admin.servers.ServerCardActions
+import net.kigawa.admin.servers.ServerStatus
+import net.kigawa.admin.servers.cordonNode
+import net.kigawa.admin.servers.deletePod
+import net.kigawa.admin.servers.drainNode
+import net.kigawa.admin.servers.gracefulRebootNode
+import net.kigawa.admin.servers.gracefulShutdownNode
+import net.kigawa.admin.servers.promptDrainTimeoutAndConfirm
+import net.kigawa.admin.servers.uncordonNode
 import org.jetbrains.compose.web.css.Color
 import org.jetbrains.compose.web.css.px
 import org.jetbrains.compose.web.css.rgba
@@ -43,6 +60,10 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     // 「まだ届いていない」ことと「届いたが空だった」ことを区別する。
     var details by remember { mutableStateOf<InfrastructureDetails?>(null) }
     var refreshKey by remember { mutableStateOf(0) }
+    // issue #116でサーバー管理ページを統合した際に持ち込んだ状態。Cordon/Drain/
+    // シャットダウン/再起動の実行結果メッセージと、実行中の非同期操作の完了待ち追跡。
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    var pendingOperations by remember { mutableStateOf<Map<String, PendingOperationState>>(emptyMap()) }
     val httpClient = remember {
         HttpClient(Js) {
             install(ContentNegotiation) {
@@ -50,6 +71,7 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
             }
         }
     }
+    val scope = rememberCoroutineScope()
 
     // accessTokenはKeycloakのトークン自動更新のたびに(トークン有効期限前の
     // サイレントリフレッシュで)新しい値になる。LaunchedEffectのキーにaccessTokenを
@@ -59,6 +81,13 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     // 最新のトークン値だけを参照し、エフェクト自体はrefreshKey(初回表示・再試行時)
     // のみで再実行されるようにする。
     val currentAccessToken by rememberUpdatedState(accessToken)
+
+    /** matchedVM・物理専用ノードの両方をまとめた、現在表示中の全K8sノード。pendingOperationsの解決判定に使う。 */
+    fun allKnownNodes(currentDetails: InfrastructureDetails?): List<ServerStatus> {
+        if (currentDetails == null) return emptyList()
+        val matchedFromVms = currentDetails.hostDetails.values.flatMap { it.vms }.mapNotNull { it.matchedNode }
+        return currentDetails.standaloneNodes + matchedFromVms
+    }
 
     LaunchedEffect(refreshKey) {
         details = null
@@ -75,12 +104,121 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
         // まずホスト一覧(高速パス)だけで画面を表示し、続けてVM/ディスク/PCIの詳細を
         // 非同期に読み込む。詳細取得が遅延・失敗してもホスト一覧の表示自体は妨げない。
         state = InfrastructureUiState.Loaded(topology)
-        details = try {
+        val fetchedDetails = try {
             fetchInfrastructureDetails(httpClient, currentAccessToken)
         } catch (e: Throwable) {
             null
         }
+        details = fetchedDetails
+
+        if (fetchedDetails != null) {
+            val nodes = allKnownNodes(fetchedDetails)
+            val stillPending = mutableMapOf<String, PendingOperationState>()
+            pendingOperations.forEach { (nodeId, opState) ->
+                val node = nodes.find { it.id == nodeId }
+                if (node == null) {
+                    // ノード自体が消えた(一覧から見えなくなった)場合はこれ以上追跡できない
+                    return@forEach
+                }
+                val sawNotReady = opState.sawNotReady || !node.ready
+                val resolved = when (opState.operation) {
+                    // 開始直後はまだReady=trueのままなので、一度NotReadyを確認してからでないと
+                    // 「完了」とみなさない(でなければ落ちる前に完了扱いになってしまう)
+                    PendingOperation.REBOOTING -> sawNotReady && node.ready
+                    PendingOperation.SHUTTING_DOWN -> !node.ready
+                }
+                if (resolved) {
+                    statusMessage = when (opState.operation) {
+                        PendingOperation.REBOOTING -> "${node.name} の再起動が完了しました"
+                        PendingOperation.SHUTTING_DOWN -> "${node.name} のシャットダウンが完了しました"
+                    }
+                } else {
+                    stillPending[nodeId] = opState.copy(sawNotReady = sawNotReady)
+                }
+            }
+            pendingOperations = stillPending
+        }
     }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(PENDING_OPERATION_POLL_INTERVAL_MS)
+            if (pendingOperations.isNotEmpty()) {
+                refreshKey++
+            }
+        }
+    }
+
+    fun runAction(action: suspend () -> ActionResult) {
+        scope.launch {
+            val result = try {
+                action()
+            } catch (e: Exception) {
+                ActionResult(false, e.message ?: "失敗しました")
+            }
+            statusMessage = result.message
+            refreshKey++
+        }
+    }
+
+    /** ノードごとのCordon/Drain/シャットダウン/再起動操作をまとめて構築する。ProxmoxのVM経由・
+     * 物理専用ノードのどちらでも同じロジックで使う(issue #116)。 */
+    fun buildActions(node: ServerStatus): ServerCardActions = ServerCardActions(
+        onCordon = {
+            if (window.confirm("${node.name} への新規Podのスケジューリングを停止しますか?(既存Podには影響しません)")) {
+                runAction { cordonNode(httpClient, accessToken, node.id) }
+            }
+        },
+        onUncordon = {
+            if (window.confirm("${node.name} への新規Podのスケジューリングを再開しますか?")) {
+                runAction { uncordonNode(httpClient, accessToken, node.id) }
+            }
+        },
+        onDrain = {
+            if (window.confirm("${node.name} 上の全Pod(DaemonSet管理下を除く)を退避しますか?影響範囲が大きい操作です。")) {
+                scope.launch {
+                    val result = try {
+                        drainNode(httpClient, accessToken, node.id)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    statusMessage = if (result != null) {
+                        "Drain完了: 退避${result.evicted}件 / スキップ${result.skipped}件 / 失敗${result.failed}件"
+                    } else {
+                        "Drainに失敗しました"
+                    }
+                    refreshKey++
+                }
+            }
+        },
+        onDeletePod = { pod ->
+            if (window.confirm("${pod.namespace}/${pod.name} を再起動(削除)しますか?")) {
+                runAction { deletePod(httpClient, accessToken, pod.namespace, pod.name) }
+            }
+        },
+        onShutdown = {
+            promptDrainTimeoutAndConfirm(node, actionLabel = "シャットダウン")?.let { timeout ->
+                runAction {
+                    val result = gracefulShutdownNode(httpClient, accessToken, node.id, timeout)
+                    if (result.success) {
+                        pendingOperations = pendingOperations + (node.id to PendingOperationState(PendingOperation.SHUTTING_DOWN))
+                    }
+                    result
+                }
+            }
+        },
+        onReboot = {
+            promptDrainTimeoutAndConfirm(node, actionLabel = "再起動")?.let { timeout ->
+                runAction {
+                    val result = gracefulRebootNode(httpClient, accessToken, node.id, timeout)
+                    if (result.success) {
+                        pendingOperations = pendingOperations + (node.id to PendingOperationState(PendingOperation.REBOOTING))
+                    }
+                    result
+                }
+            }
+        }
+    )
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -109,6 +247,10 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
             modifier = Modifier.fillMaxSize().padding(24.px),
             verticalArrangement = Arrangement.spacedBy(16.px)
         ) {
+            statusMessage?.let { message ->
+                SpanText(message, modifier = Modifier.color(Colors.Blue))
+            }
+
             when (val current = state) {
                 is InfrastructureUiState.Loading -> SpanText("読み込み中...")
                 is InfrastructureUiState.Error -> ErrorStateWithRetry(current.message, onRetry = { refreshKey++ })
@@ -125,7 +267,16 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                 } else if (current.topology.hosts.isEmpty() && details != null && details!!.standaloneNodes.isEmpty()) {
                     SpanText("物理ホスト・ノードが見つかりませんでした", modifier = Modifier.color(Colors.Gray))
                 } else {
-                    current.topology.hosts.forEach { host -> HostCard(host, details?.hostDetails?.get(host.name)) }
+                    current.topology.hosts.forEach { host ->
+                        HostCard(
+                            host = host,
+                            details = details?.hostDetails?.get(host.name),
+                            pendingOperations = pendingOperations,
+                            httpClient = httpClient,
+                            accessToken = accessToken,
+                            buildActions = ::buildActions
+                        )
+                    }
                     val currentDetails = details
                     if (currentDetails == null) {
                         SpanText(
@@ -138,33 +289,13 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                             modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium).padding(top = 8.px)
                         )
                         currentDetails.standaloneNodes.forEach { node ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.px)
-                                    .backgroundColor(Colors.White)
-                                    .borderRadius(8.px)
-                                    .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08)),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(2.px)) {
-                                    SpanText(node.name, modifier = Modifier.fontWeight(FontWeight.Bold))
-                                    SpanText(roleLabel(node.role), modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small))
-                                    // Proxmox VM化されていない物理ノードにはInfraHostDtoのような
-                                    // ディスク/PCI型番情報は無い(Proxmox管理外のため)が、K8sの
-                                    // Node APIが返すハードウェア/バージョン情報はここで表示できる。
-                                    SpanText(
-                                        "CPU: ${node.cpuCapacity} / メモリ: ${node.memoryCapacity}",
-                                        modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-                                    )
-                                    SpanText(
-                                        "OS: ${node.osImage} / Kubelet: ${node.kubeletVersion}",
-                                        modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-                                    )
-                                }
-                                ReadyBadge(node.ready)
-                            }
+                            ServerCard(
+                                server = node,
+                                pendingOperation = pendingOperations[node.id]?.operation,
+                                httpClient = httpClient,
+                                accessToken = accessToken,
+                                actions = buildActions(node)
+                            )
                         }
                     }
                 }
@@ -174,7 +305,14 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun HostCard(host: InfraHost, details: InfraHostDetails?) {
+private fun HostCard(
+    host: InfraHost,
+    details: InfraHostDetails?,
+    pendingOperations: Map<String, PendingOperationState>,
+    httpClient: HttpClient,
+    accessToken: String,
+    buildActions: (ServerStatus) -> ServerCardActions
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -258,9 +396,17 @@ private fun HostCard(host: InfraHost, details: InfraHostDetails?) {
             } else {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.px),
-                    verticalArrangement = Arrangement.spacedBy(4.px)
+                    verticalArrangement = Arrangement.spacedBy(8.px)
                 ) {
-                    details.vms.forEach { vm -> VmRow(vm) }
+                    details.vms.forEach { vm ->
+                        VmSection(
+                            vm = vm,
+                            pendingOperation = vm.matchedNode?.let { pendingOperations[it.id]?.operation },
+                            httpClient = httpClient,
+                            accessToken = accessToken,
+                            buildActions = buildActions
+                        )
+                    }
                 }
             }
         }
@@ -268,28 +414,38 @@ private fun HostCard(host: InfraHost, details: InfraHostDetails?) {
 }
 
 @Composable
-private fun VmRow(vm: InfraVm) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(topBottom = 4.px),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SpanText(vm.name, modifier = Modifier.fontSize(FontSize.Small))
-                if (vm.matchedNode != null) {
-                    SpanText(
-                        "  K8sノード",
-                        modifier = Modifier.color(Color("#2A78D6")).fontSize(FontSize.Small)
-                    )
-                }
-            }
+private fun VmSection(
+    vm: InfraVm,
+    pendingOperation: PendingOperation?,
+    httpClient: HttpClient,
+    accessToken: String,
+    buildActions: (ServerStatus) -> ServerCardActions
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.px)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(topBottom = 4.px),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SpanText(vm.name, modifier = Modifier.fontSize(FontSize.Small))
             SpanText(
                 "vmid ${vm.vmid} · ${vm.cpuCores ?: "-"} コア / ${formatBytesAsGiB(vm.memoryBytes)}",
                 modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
             )
         }
-        vm.matchedNode?.let { ReadyBadge(it.ready) }
+        // ProxmoxのVMがK8sノードとして稼働している場合、サーバー管理の全機能
+        // (実使用量・Cordon/Drain・シャットダウン/再起動等)をここに直接表示する
+        // (issue #116: インフラ構成とサーバー管理の統合)。
+        val node = vm.matchedNode
+        if (node != null) {
+            ServerCard(
+                server = node,
+                pendingOperation = pendingOperation,
+                httpClient = httpClient,
+                accessToken = accessToken,
+                actions = buildActions(node)
+            )
+        }
     }
 }
 
@@ -297,10 +453,4 @@ private fun VmRow(vm: InfraVm) {
 private fun OnlineBadge(online: Boolean) {
     val color = if (online) Color("#008300") else Color("#E34948")
     SpanText(if (online) "Online" else "Offline", modifier = Modifier.color(color).fontWeight(FontWeight.Bold))
-}
-
-@Composable
-private fun ReadyBadge(ready: Boolean) {
-    val color = if (ready) Color("#008300") else Color("#E34948")
-    SpanText(if (ready) "Ready" else "NotReady", modifier = Modifier.color(color).fontSize(FontSize.Small))
 }

@@ -19,7 +19,6 @@ fun DashboardScreen(
     onLogout: () -> Unit,
     onOpenNetworkMap: () -> Unit,
     onOpenTraffic: () -> Unit,
-    onOpenServers: () -> Unit,
     onOpenUsers: () -> Unit,
     onOpenOrganizations: () -> Unit,
     onOpenInfrastructure: () -> Unit
@@ -133,20 +132,6 @@ fun DashboardScreen(
             }
 
             if (isAdmin) {
-                Card(modifier = Modifier.fillMaxWidth().clickable { onOpenServers() }) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "サーバー管理",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Text(
-                            text = "各ノードの稼働状態を確認・操作する",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
                 Card(modifier = Modifier.fillMaxWidth().clickable { onOpenUsers() }) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
@@ -168,7 +153,7 @@ fun DashboardScreen(
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = "物理ホストとVM(K8sノードを含む)の対応関係を確認する",
+                            text = "物理ホストとVM(K8sノードを含む)の対応関係、各ノードの稼働状態を確認・操作する",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
