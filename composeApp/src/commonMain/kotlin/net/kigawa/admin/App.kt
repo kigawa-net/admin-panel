@@ -9,7 +9,6 @@ import net.kigawa.admin.networkmap.NetworkMapScreen
 import net.kigawa.admin.organizations.OrganizationScreen
 import net.kigawa.admin.screen.DashboardScreen
 import net.kigawa.admin.screen.LoginScreen
-import net.kigawa.admin.servers.ServerStatusScreen
 import net.kigawa.admin.traffic.TrafficScreen
 import net.kigawa.admin.users.UserManagementScreen
 
@@ -17,7 +16,6 @@ private sealed class AppScreen {
     object Dashboard : AppScreen()
     object NetworkMap : AppScreen()
     object Traffic : AppScreen()
-    object Servers : AppScreen()
     object Users : AppScreen()
     object Organizations : AppScreen()
     object Infrastructure : AppScreen()
@@ -53,7 +51,6 @@ fun App(authProvider: KeycloakAuthProvider) {
                     onLogout = { authProvider.logout() },
                     onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
                     onOpenTraffic = { currentScreen = AppScreen.Traffic },
-                    onOpenServers = { currentScreen = AppScreen.Servers },
                     onOpenUsers = { currentScreen = AppScreen.Users },
                     onOpenOrganizations = { currentScreen = AppScreen.Organizations },
                     onOpenInfrastructure = { currentScreen = AppScreen.Infrastructure }
@@ -66,14 +63,6 @@ fun App(authProvider: KeycloakAuthProvider) {
                     accessToken = state.accessToken,
                     onBack = { currentScreen = AppScreen.Dashboard }
                 )
-                AppScreen.Servers -> if (isAdmin) {
-                    ServerStatusScreen(
-                        accessToken = state.accessToken,
-                        onBack = { currentScreen = AppScreen.Dashboard }
-                    )
-                } else {
-                    currentScreen = AppScreen.Dashboard
-                }
                 AppScreen.Users -> if (isAdmin) {
                     UserManagementScreen(
                         accessToken = state.accessToken,

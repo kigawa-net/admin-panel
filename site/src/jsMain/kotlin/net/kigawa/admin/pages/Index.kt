@@ -32,7 +32,6 @@ fun HomePage() {
                 isAdmin = isAdmin,
                 onLogout = logout,
                 onOpenNetworkMap = { ctx.router.navigateTo("/network-map") },
-                onOpenServers = { ctx.router.navigateTo("/servers") },
                 onOpenUsers = { ctx.router.navigateTo("/users") },
                 onOpenOrganizations = { ctx.router.navigateTo("/organizations") },
                 onOpenGithubApp = { ctx.router.navigateTo("/github-app") },
@@ -48,7 +47,6 @@ private fun DashboardPage(
     isAdmin: Boolean,
     onLogout: () -> Unit,
     onOpenNetworkMap: () -> Unit,
-    onOpenServers: () -> Unit,
     onOpenUsers: () -> Unit,
     onOpenOrganizations: () -> Unit,
     onOpenGithubApp: () -> Unit,
@@ -155,26 +153,6 @@ private fun DashboardPage(
                         .backgroundColor(Colors.White)
                         .borderRadius(8.px)
                         .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
-                        .onClick { onOpenServers() }
-                        .cursor(Cursor.Pointer)
-                ) {
-                    SpanText(
-                        "サーバー管理",
-                        modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
-                    )
-                    SpanText(
-                        "各ノードの稼働状態を確認・操作する",
-                        modifier = Modifier.color(Colors.Gray)
-                    )
-                }
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.px)
-                        .backgroundColor(Colors.White)
-                        .borderRadius(8.px)
-                        .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08))
                         .onClick { onOpenUsers() }
                         .cursor(Cursor.Pointer)
                 ) {
@@ -223,7 +201,7 @@ private fun DashboardPage(
                         modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium)
                     )
                     SpanText(
-                        "物理ホストとVM(K8sノードを含む)の対応関係を確認する",
+                        "物理ホストとVM(K8sノードを含む)の対応関係、各ノードの稼働状態を確認・操作する",
                         modifier = Modifier.color(Colors.Gray)
                     )
                 }
