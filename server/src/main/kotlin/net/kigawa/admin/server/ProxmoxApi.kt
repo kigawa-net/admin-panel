@@ -268,6 +268,8 @@ private suspend fun fetchNodes(client: HttpClient, auth: String, description: St
 suspend fun fetchInfrastructureHosts(): InfrastructureTopologyDto {
     val auth = authHeader() ?: return InfrastructureTopologyDto(proxmoxConfigured = false)
 
+    // issue #118「インフラ構成ページが重い」の調査用に、実際の所要時間を記録する。
+    val start = System.currentTimeMillis()
     val client = buildProxmoxHttpClient()
     try {
         val nodes = try {
@@ -321,6 +323,7 @@ suspend fun fetchInfrastructureHosts(): InfrastructureTopologyDto {
         return InfrastructureTopologyDto(proxmoxConfigured = true, hosts = hosts)
     } finally {
         client.close()
+        logger.info("fetchInfrastructureHosts took ${System.currentTimeMillis() - start}ms")
     }
 }
 
@@ -332,6 +335,8 @@ suspend fun fetchInfrastructureHosts(): InfrastructureTopologyDto {
 suspend fun fetchInfrastructureDetails(): InfrastructureDetailsDto {
     val auth = authHeader() ?: return InfrastructureDetailsDto()
 
+    // issue #118「インフラ構成ページが重い」の調査用に、実際の所要時間を記録する。
+    val start = System.currentTimeMillis()
     val client = buildProxmoxHttpClient()
     try {
         val nodes = try {
@@ -360,6 +365,7 @@ suspend fun fetchInfrastructureDetails(): InfrastructureDetailsDto {
         return InfrastructureDetailsDto(hostDetails = hostDetailsList.toMap(), standaloneNodes = standaloneNodes)
     } finally {
         client.close()
+        logger.info("fetchInfrastructureDetails took ${System.currentTimeMillis() - start}ms")
     }
 }
 
