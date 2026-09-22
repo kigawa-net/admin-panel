@@ -233,7 +233,12 @@ class KeycloakAuthProvider : AutoCloseable {
         params.set("response_type", "code")
         params.set("client_id", KeycloakConfig.clientId)
         params.set("redirect_uri", redirectUri)
-        params.set("scope", "openid profile email")
+        // offline_accessスコープを要求すると、通常のSSOセッション(ブラウザを長時間
+        // 閉じていると期限切れになりやすい)より大幅に長寿命な「オフラインリフレッシュ
+        // トークン」がKeycloakから発行される。しばらく間を置いてから再訪すると再ログインを
+        // 求められる、という報告(admin-panel#115)はこのリフレッシュトークンの期限切れが
+        // 原因であり、offline_accessを要求することでセッション保持期間を延ばせる。
+        params.set("scope", "openid profile email offline_access")
         params.set("state", state)
         params.set("code_challenge", codeChallenge)
         params.set("code_challenge_method", "S256")
