@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: admin-panel-mariadb
+  labels:
+    app: admin-panel-mariadb
+spec:
+  serviceName: admin-panel-mariadb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-panel-mariadb
+  template:
+    metadata:
+      labels:
+        app: admin-panel-mariadb
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11.4
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MARIADB_DATABASE
+              value: admin_panel
+            - name: MARIADB_USER
+              value: admin_panel
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-mariadb
+                  key: app-password
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-mariadb
+                  key: root-password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

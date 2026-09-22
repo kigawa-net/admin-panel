@@ -20,6 +20,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.logback.classic)
     implementation(libs.sshj)
+    implementation(libs.mariadb.java.client)
+    implementation(libs.hikaricp)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.ktor.client.mock)
