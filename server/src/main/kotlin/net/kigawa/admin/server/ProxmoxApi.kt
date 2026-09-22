@@ -13,6 +13,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -130,26 +131,21 @@ data class InfraVmDto(
 )
 
 /**
- * ホストの基本情報+ハードウェア情報(nodes一覧+ノードごとのstatus呼び出しのみ)。
- * VM一覧・ディスク・PCIデバイスはさらに呼び出し回数が多く遅くなりがちなため、
- * InfraHostDetailsDto側に分離し、ページはまずこちらを先に表示してから詳細を
- * 非同期で読み込めるようにしている。
+ * ホストの基本情報のみ(nodes一覧の呼び出し1回だけで完結する、本当の意味での高速パス)。
+ *
+ * issue #118「インフラ構成ページが重い」の調査で、以前はここにノードごとのstatus呼び出し
+ * (CPUモデル・カーネル/PVEバージョン・rootfs)も含めていたが、そのstatus呼び出しが
+ * host4のCPU逼迫時に20秒以上詰まることがあり、fetchInfrastructureHosts()全体を最大45秒
+ * (20秒タイムアウト×2回+間の5秒待機)待たせる主因になっていた。この関数は/nodes呼び出し
+ * 1回のみ(host1経由で1秒未満)で完結させ、ノードごとの追加呼び出しが必要なハードウェア
+ * 詳細はInfraHostDetailsDto側(fetchInfrastructureDetails、非同期パス)に移した。
  */
 @Serializable
 data class InfraHostDto(
     val name: String,
     val online: Boolean,
     val cpuCores: Int? = null,
-    val memoryBytes: Long? = null,
-    /** 以下はnodes/{node}/statusから取得する詳細なハードウェア情報。オフラインノードや
-     * 取得失敗時はnullのままで、既存のcpuCores/memoryBytesのみの表示にフォールバックする。 */
-    val cpuModel: String? = null,
-    val cpuSockets: Int? = null,
-    val cpuPhysicalCores: Int? = null,
-    val kernelVersion: String? = null,
-    val pveVersion: String? = null,
-    val rootfsTotalBytes: Long? = null,
-    val rootfsUsedBytes: Long? = null
+    val memoryBytes: Long? = null
 )
 
 @Serializable
@@ -162,8 +158,8 @@ data class InfrastructureTopologyDto(
     val hosts: List<InfraHostDto> = emptyList()
 )
 
-/** ホスト名をキーにしたVM/ディスク/PCIデバイスの詳細。取得失敗時は該当ホストのエントリ
- * ごと欠落する(クライアント側は「読み込み中」のまま扱う)。 */
+/** ホスト名をキーにしたVM/ディスク/PCIデバイス・ハードウェア詳細。取得失敗時は該当ホストの
+ * エントリごと欠落する(クライアント側は「読み込み中」のまま扱う)。 */
 @Serializable
 data class InfraHostDetailsDto(
     val disks: List<InfraDiskDto> = emptyList(),
@@ -171,7 +167,17 @@ data class InfraHostDetailsDto(
      * コントローラ類は多すぎて有用でないため、ネットワーク/ストレージ/GPU相当の
      * デバイスのみに絞り込んで返す。取得失敗時は空リスト。 */
     val pciDevices: List<InfraPciDeviceDto> = emptyList(),
-    val vms: List<InfraVmDto> = emptyList()
+    val vms: List<InfraVmDto> = emptyList(),
+    /** 以下はnodes/{node}/statusから取得する詳細なハードウェア情報(issue #118でInfraHostDtoから
+     * こちらへ移動)。取得失敗時はnullのままで、InfraHostDtoのcpuCores/memoryBytesのみの
+     * 表示にフォールバックする。 */
+    val cpuModel: String? = null,
+    val cpuSockets: Int? = null,
+    val cpuPhysicalCores: Int? = null,
+    val kernelVersion: String? = null,
+    val pveVersion: String? = null,
+    val rootfsTotalBytes: Long? = null,
+    val rootfsUsedBytes: Long? = null
 )
 
 @Serializable
@@ -261,9 +267,9 @@ private suspend fun fetchNodes(client: HttpClient, auth: String, description: St
     }
 
 /**
- * ホスト一覧+ハードウェア情報のみを取得する高速パス。ページはまずこちらの結果を表示し、
- * VM/ディスク/PCIデバイスの詳細はfetchInfrastructureDetails()で非同期に取得する。
- * ノードごとのstatus呼び出しは並列実行し、ノード数が増えても直列に待たされないようにする。
+ * ホスト一覧のみを取得する高速パス(/nodes呼び出し1回のみ)。ページはまずこちらの結果を
+ * 表示し、ノードごとのハードウェア詳細・VM/ディスク/PCIデバイスの詳細はいずれも
+ * fetchInfrastructureDetails()で非同期に取得する(issue #118)。
  */
 suspend fun fetchInfrastructureHosts(): InfrastructureTopologyDto {
     val auth = authHeader() ?: return InfrastructureTopologyDto(proxmoxConfigured = false)
@@ -282,42 +288,13 @@ suspend fun fetchInfrastructureHosts(): InfrastructureTopologyDto {
             return InfrastructureTopologyDto(proxmoxConfigured = true, proxmoxReachable = false, hosts = emptyList())
         }
 
-        val hosts = coroutineScope {
-            nodes.sortedBy { it.node }.map { node ->
-                async {
-                    // ハードウェア詳細(CPUモデル・カーネル/PVEバージョン・rootfs)はnodes一覧には
-                    // 含まれないため、ノードごとにstatusを追加で取得する。取得失敗時は既存の
-                    // cpuCores/memoryBytesのみの表示にフォールバックし、ページ全体は失敗させない。
-                    val hwStatus = if (node.status == "online") {
-                        try {
-                            withTimeoutRetry("Proxmox status fetch for node ${node.node}") {
-                                client.get("$proxmoxApiUrl/api2/json/nodes/${node.node}/status") {
-                                    header("Authorization", auth)
-                                }.body<ProxmoxEnvelope<ProxmoxNodeStatusDto>>().data
-                            }
-                        } catch (e: Exception) {
-                            logger.warn("Proxmox status fetch failed for node ${node.node}: ${e::class.qualifiedName}: ${e.message}", e)
-                            null
-                        }
-                    } else {
-                        null
-                    }
-
-                    InfraHostDto(
-                        name = node.node,
-                        online = node.status == "online",
-                        cpuCores = node.maxcpu,
-                        memoryBytes = node.maxmem,
-                        cpuModel = hwStatus?.cpuinfo?.model,
-                        cpuSockets = hwStatus?.cpuinfo?.sockets,
-                        cpuPhysicalCores = hwStatus?.cpuinfo?.cores,
-                        kernelVersion = hwStatus?.kversion,
-                        pveVersion = hwStatus?.pveversion,
-                        rootfsTotalBytes = hwStatus?.rootfs?.total,
-                        rootfsUsedBytes = hwStatus?.rootfs?.used
-                    )
-                }
-            }.awaitAll()
+        val hosts = nodes.sortedBy { it.node }.map { node ->
+            InfraHostDto(
+                name = node.node,
+                online = node.status == "online",
+                cpuCores = node.maxcpu,
+                memoryBytes = node.maxmem
+            )
         }
 
         return InfrastructureTopologyDto(proxmoxConfigured = true, hosts = hosts)
@@ -433,6 +410,24 @@ private suspend fun fetchHostDetails(
         }
     }
 
+    // CPUモデル・カーネル/PVEバージョン・rootfs(issue #118でfetchInfrastructureHosts()から
+    // こちらの非同期パスへ移動)。あくまでオプショナルな付随情報で失敗時はnullフォールバック
+    // が効くため、リトライはせず短いタイムアウトで早めに諦める(host4はゲストVMのCPU逼迫で
+    // 断続的に20秒以上応答が遅れることが実機で確認済みなので、ここで長時間粘っても他ホストの
+    // 詳細表示まで道連れに遅らせるだけ)。
+    val hwStatusDeferred = async {
+        try {
+            withTimeoutOrNull(8_000) {
+                client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/status") {
+                    header("Authorization", auth)
+                }.body<ProxmoxEnvelope<ProxmoxNodeStatusDto>>().data
+            }
+        } catch (e: Exception) {
+            logger.warn("Proxmox status fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}", e)
+            null
+        }
+    }
+
     val vms = vmsDeferred.await()
         .filter { it.status == "running" }
         .sortedBy { it.name ?: it.vmid.toString() }
@@ -448,5 +443,18 @@ private suspend fun fetchHostDetails(
             )
         }
 
-    InfraHostDetailsDto(disks = disksDeferred.await(), pciDevices = pciDeferred.await(), vms = vms)
+    val hwStatus = hwStatusDeferred.await()
+
+    InfraHostDetailsDto(
+        disks = disksDeferred.await(),
+        pciDevices = pciDeferred.await(),
+        vms = vms,
+        cpuModel = hwStatus?.cpuinfo?.model,
+        cpuSockets = hwStatus?.cpuinfo?.sockets,
+        cpuPhysicalCores = hwStatus?.cpuinfo?.cores,
+        kernelVersion = hwStatus?.kversion,
+        pveVersion = hwStatus?.pveversion,
+        rootfsTotalBytes = hwStatus?.rootfs?.total,
+        rootfsUsedBytes = hwStatus?.rootfs?.used
+    )
 }
