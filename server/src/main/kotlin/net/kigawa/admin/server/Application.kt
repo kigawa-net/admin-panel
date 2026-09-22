@@ -35,6 +35,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import io.ktor.server.routing.put
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -119,6 +121,13 @@ fun Application.module() {
     val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     monitor.subscribe(ApplicationStopping) { backgroundScope.cancel() }
     val logger = environment.log
+
+    // admin-panel#64: CI向けトークン発行の許可設定(ci_token_policy)用DB。MariaDBが未設定の
+    // 環境(ローカル開発等)では機能ごと無効化し、他の機能には影響させない。
+    if (isDatabaseConfigured) {
+        initDatabaseSchema()
+        runBlocking { seedCiTokenPolicyIfEmpty() }
+    }
 
     routing {
         get("/health") {
@@ -644,6 +653,10 @@ fun Application.module() {
                 call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
                 return@post
             }
+            if (!isDatabaseConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
+                return@post
+            }
             val request = call.receive<GithubCiTokenRequest>()
             val owner = request.owner ?: "kigawa-net"
             val policyError = checkCiTokenRequest(
@@ -665,6 +678,68 @@ fun Application.module() {
                     permissions = request.permissions
                 )
             )
+        }
+
+        // admin-panel#64: 上のci-tokenブローカーが参照する呼び出し元リポジトリ別許可設定
+        // (ci_token_policy)を管理画面から追加・編集・削除できるようにするCRUD。管理者限定。
+        get("/api/github-app/ci-policy") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            if (!isDatabaseConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
+                return@get
+            }
+            call.respond(listCiTokenPolicies())
+        }
+
+        put("/api/github-app/ci-policy/{callerRepository}") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@put
+            }
+            if (!isDatabaseConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
+                return@put
+            }
+            val callerRepository = call.parameters["callerRepository"]
+            if (callerRepository.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing callerRepository"))
+                return@put
+            }
+            val request = call.receive<CiTokenPolicyEntryDto>()
+            if (request.callerRepository != callerRepository) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "callerRepository mismatch"))
+                return@put
+            }
+            upsertCiTokenPolicy(request)
+            call.respond(request)
+        }
+
+        delete("/api/github-app/ci-policy/{callerRepository}") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@delete
+            }
+            if (!isDatabaseConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
+                return@delete
+            }
+            val callerRepository = call.parameters["callerRepository"]
+            if (callerRepository.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing callerRepository"))
+                return@delete
+            }
+            val deleted = deleteCiTokenPolicy(callerRepository)
+            if (deleted) {
+                call.respond(HttpStatusCode.OK, mapOf("deleted" to "true"))
+            } else {
+                call.respond(HttpStatusCode.NotFound, mapOf("error" to "not found"))
+            }
         }
     }
 }

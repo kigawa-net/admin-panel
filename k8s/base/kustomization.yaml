@@ -11,3 +11,6 @@ resources:
   - github-app-bws.yaml
   - node-ssh-bws.yaml
   - proxmox-bws.yaml
+  - mariadb-db-bws.yaml
+  - mariadb-statefulset.yaml
+  - mariadb-service.yaml

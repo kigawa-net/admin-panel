@@ -12,6 +12,8 @@ kotlinx-coroutines = "1.9.0"
 kotlinx-serialization = "1.7.3"
 logback = "1.5.12"
 sshj = "0.38.0"
+mariadb-java-client = "3.5.1"
+hikaricp = "6.2.1"
 
 [libraries]
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
@@ -32,6 +34,8 @@ kobweb-silk = { module = "com.varabyte.kobweb:kobweb-silk", version.ref = "kobwe
 silk-icons-fa = { module = "com.varabyte.kobwebx:silk-icons-fa", version.ref = "kobweb" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }
+mariadb-java-client = { module = "org.mariadb.jdbc:mariadb-java-client", version.ref = "mariadb-java-client" }
+hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
 
 [plugins]
 kotlinJvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

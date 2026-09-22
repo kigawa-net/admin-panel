@@ -125,6 +125,23 @@ spec:
                   name: admin-panel-proxmox-service
                   key: tokenSecret
                   optional: true
+            # CI向けトークン発行の呼び出し元リポジトリ別許可設定(ci_token_policy)を
+            # 管理画面から編集できるようにするための専用MariaDB(admin-panel#64、
+            # mariadb-statefulset.yaml/mariadb-db-bws.yaml)。MARIADB_PASSWORDが未設定の
+            # 間はDB機能全体が無効化され、/api/github-app/ci-token・/api/github-app/
+            # ci-policyが503を返すのみで、他機能には影響しない。
+            - name: MARIADB_HOST
+              value: admin-panel-mariadb
+            - name: MARIADB_DATABASE
+              value: admin_panel
+            - name: MARIADB_USER
+              value: admin_panel
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-mariadb
+                  key: app-password
+                  optional: true
           resources:
             requests:
               cpu: 50m
