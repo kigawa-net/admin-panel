@@ -18,7 +18,13 @@ data class ServerStatusDto(
     val cpuCapacity: String,
     val memoryCapacity: String,
     val podCount: Int?,
-    val podCapacity: Int?
+    val podCapacity: Int?,
+    /** クラスタ内のPrometheus(kube-prometheus-stack)から取得した実際のCPU使用コア数。
+     * node-exporterが未導入のため、kubelet(cAdvisor)のコンテナ単位メトリクスをノード
+     * ごとに集計した近似値。Prometheusに到達できない場合はnull。 */
+    val cpuUsageCores: Double? = null,
+    /** 実際のメモリ使用量(バイト)。cpuUsageCoresと同様の方法・同様の制約。 */
+    val memoryUsageBytes: Long? = null
 )
 
 @Serializable
@@ -51,8 +57,15 @@ suspend fun fetchServerStatuses(): ServerStatusListDto? {
             emptyMap()
         }
 
+        val resourceUsageByNode = try {
+            fetchNodeResourceUsage()
+        } catch (e: Exception) {
+            emptyMap()
+        }
+
         val servers = nodeList.items.map { node ->
             val ready = node.status.conditions.firstOrNull { it.type == "Ready" }?.status == "True"
+            val usage = resourceUsageByNode[node.metadata.name]
             ServerStatusDto(
                 id = node.metadata.name,
                 name = node.metadata.name,
@@ -64,7 +77,9 @@ suspend fun fetchServerStatuses(): ServerStatusListDto? {
                 cpuCapacity = node.status.capacity["cpu"] ?: "-",
                 memoryCapacity = node.status.capacity["memory"] ?: "-",
                 podCount = podCountByNode[node.metadata.name],
-                podCapacity = node.status.capacity["pods"]?.toIntOrNull()
+                podCapacity = node.status.capacity["pods"]?.toIntOrNull(),
+                cpuUsageCores = usage?.cpuUsageCores,
+                memoryUsageBytes = usage?.memoryUsageBytes
             )
         }
         ServerStatusListDto(servers)

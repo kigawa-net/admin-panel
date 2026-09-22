@@ -31,19 +31,19 @@ data class NetworkTopologyDto(
 )
 
 @Serializable
-private data class PrometheusInstantQueryResponse(
+internal data class PrometheusInstantQueryResponse(
     val status: String? = null,
     val data: PrometheusInstantData? = null
 )
 
 @Serializable
-private data class PrometheusInstantData(
+internal data class PrometheusInstantData(
     val resultType: String? = null,
     val result: List<PrometheusInstantResult> = emptyList()
 )
 
 @Serializable
-private data class PrometheusInstantResult(
+internal data class PrometheusInstantResult(
     val metric: Map<String, String> = emptyMap(),
     val value: List<JsonElement> = emptyList()
 )

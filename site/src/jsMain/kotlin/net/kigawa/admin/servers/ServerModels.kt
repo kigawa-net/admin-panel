@@ -14,7 +14,9 @@ data class ServerStatus(
     val cpuCapacity: String,
     val memoryCapacity: String,
     val podCount: Int? = null,
-    val podCapacity: Int? = null
+    val podCapacity: Int? = null,
+    val cpuUsageCores: Double? = null,
+    val memoryUsageBytes: Long? = null
 )
 
 @Serializable
@@ -55,4 +57,32 @@ fun formatMemoryCapacity(raw: String): String {
     val gib = kibValue / 1024.0 / 1024.0
     val rounded = (kotlin.math.round(gib * 10) / 10.0)
     return "$rounded GiB"
+}
+
+/** Prometheusから実使用量を取得できなかった場合はnullを返す(呼び出し側は表示自体を省略する)。 */
+fun formatCpuUsage(usageCores: Double?, capacityCores: String): String? {
+    if (usageCores == null) return null
+    val capacity = capacityCores.toDoubleOrNull()
+    val roundedUsage = kotlin.math.round(usageCores * 10) / 10.0
+    return if (capacity != null && capacity > 0) {
+        val percent = kotlin.math.round(usageCores / capacity * 100)
+        "$roundedUsage / $capacityCores コア (${percent.toInt()}%)"
+    } else {
+        "$roundedUsage コア"
+    }
+}
+
+fun formatMemoryUsage(usageBytes: Long?, capacityKi: String): String? {
+    if (usageBytes == null) return null
+    val usageGib = usageBytes / 1024.0 / 1024.0 / 1024.0
+    val roundedUsage = kotlin.math.round(usageGib * 10) / 10.0
+    val capacityKib = capacityKi.removeSuffix("Ki").toLongOrNull()
+    return if (capacityKib != null && capacityKib > 0) {
+        val capacityGib = capacityKib / 1024.0 / 1024.0
+        val percent = kotlin.math.round(usageBytes / (capacityKib * 1024.0) * 100)
+        val roundedCapacity = kotlin.math.round(capacityGib * 10) / 10.0
+        "$roundedUsage / $roundedCapacity GiB (${percent.toInt()}%)"
+    } else {
+        "$roundedUsage GiB"
+    }
 }
