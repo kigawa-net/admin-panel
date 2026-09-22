@@ -28,21 +28,15 @@ data class InfraPciDevice(
     val vendor: String? = null
 )
 
-/** ホストの基本情報+ハードウェア情報のみ(高速パス、/api/infrastructure)。VM/ディスク/PCIの
- * 詳細はInfraHostDetails(/api/infrastructure/details)側で非同期に読み込む。 */
+/** ホストの基本情報のみ(高速パス、/api/infrastructure、/nodes呼び出し1回で完結)。
+ * ノードごとに追加呼び出しが必要なハードウェア詳細・VM/ディスク/PCIはいずれも
+ * InfraHostDetails(/api/infrastructure/details)側で非同期に読み込む(issue #118)。 */
 @Serializable
 data class InfraHost(
     val name: String,
     val online: Boolean,
     val cpuCores: Int? = null,
-    val memoryBytes: Long? = null,
-    val cpuModel: String? = null,
-    val cpuSockets: Int? = null,
-    val cpuPhysicalCores: Int? = null,
-    val kernelVersion: String? = null,
-    val pveVersion: String? = null,
-    val rootfsTotalBytes: Long? = null,
-    val rootfsUsedBytes: Long? = null
+    val memoryBytes: Long? = null
 )
 
 @Serializable
@@ -56,7 +50,14 @@ data class InfrastructureTopology(
 data class InfraHostDetails(
     val disks: List<InfraDisk> = emptyList(),
     val pciDevices: List<InfraPciDevice> = emptyList(),
-    val vms: List<InfraVm> = emptyList()
+    val vms: List<InfraVm> = emptyList(),
+    val cpuModel: String? = null,
+    val cpuSockets: Int? = null,
+    val cpuPhysicalCores: Int? = null,
+    val kernelVersion: String? = null,
+    val pveVersion: String? = null,
+    val rootfsTotalBytes: Long? = null,
+    val rootfsUsedBytes: Long? = null
 )
 
 @Serializable

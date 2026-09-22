@@ -336,35 +336,38 @@ private fun HostCard(
                 modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
             )
         }
-        if (host.cpuModel != null) {
-            SpanText(
-                buildString {
-                    append(host.cpuModel)
-                    if (host.cpuSockets != null && host.cpuPhysicalCores != null) {
-                        append(" (${host.cpuSockets}ソケット × ${host.cpuPhysicalCores}コア)")
-                    }
-                },
-                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-            )
-        }
-        if (host.rootfsTotalBytes != null) {
-            SpanText(
-                "ディスク: ${formatBytesAsGiB(host.rootfsUsedBytes)} / ${formatBytesAsGiB(host.rootfsTotalBytes)}",
-                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-            )
-        }
-        if (host.pveVersion != null || host.kernelVersion != null) {
-            SpanText(
-                "PVE: ${host.pveVersion ?: "-"} / Kernel: ${host.kernelVersion ?: "-"}",
-                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-            )
-        }
         if (details == null) {
             SpanText(
                 "詳細情報を読み込み中...",
                 modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small).padding(top = 4.px)
             )
         } else {
+            // CPUモデル・ディスク総容量・PVE/カーネルバージョンは、ノードごとに追加の
+            // status呼び出しが必要なため詳細(details)側にある(issue #118でホスト一覧の
+            // 高速パスから移動した)。
+            if (details.cpuModel != null) {
+                SpanText(
+                    buildString {
+                        append(details.cpuModel)
+                        if (details.cpuSockets != null && details.cpuPhysicalCores != null) {
+                            append(" (${details.cpuSockets}ソケット × ${details.cpuPhysicalCores}コア)")
+                        }
+                    },
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            }
+            if (details.rootfsTotalBytes != null) {
+                SpanText(
+                    "ディスク: ${formatBytesAsGiB(details.rootfsUsedBytes)} / ${formatBytesAsGiB(details.rootfsTotalBytes)}",
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            }
+            if (details.pveVersion != null || details.kernelVersion != null) {
+                SpanText(
+                    "PVE: ${details.pveVersion ?: "-"} / Kernel: ${details.kernelVersion ?: "-"}",
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            }
             if (details.disks.isNotEmpty()) {
                 Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
                     SpanText("ディスク型番", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))

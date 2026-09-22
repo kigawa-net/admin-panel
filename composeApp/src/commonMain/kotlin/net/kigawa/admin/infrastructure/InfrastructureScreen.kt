@@ -382,32 +382,6 @@ private fun HostCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (host.cpuModel != null) {
-                Text(
-                    buildString {
-                        append(host.cpuModel)
-                        if (host.cpuSockets != null && host.cpuPhysicalCores != null) {
-                            append(" (${host.cpuSockets}ソケット × ${host.cpuPhysicalCores}コア)")
-                        }
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (host.rootfsTotalBytes != null) {
-                Text(
-                    "ディスク: ${formatBytesAsGiB(host.rootfsUsedBytes)} / ${formatBytesAsGiB(host.rootfsTotalBytes)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (host.pveVersion != null || host.kernelVersion != null) {
-                Text(
-                    "PVE: ${host.pveVersion ?: "-"} / Kernel: ${host.kernelVersion ?: "-"}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
             if (details == null) {
                 Text(
                     "詳細情報を読み込み中...",
@@ -415,6 +389,35 @@ private fun HostCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
+                // CPUモデル・ディスク総容量・PVE/カーネルバージョンは、ノードごとに追加の
+                // status呼び出しが必要なため詳細(details)側にある(issue #118でホスト一覧の
+                // 高速パスから移動した)。
+                if (details.cpuModel != null) {
+                    Text(
+                        buildString {
+                            append(details.cpuModel)
+                            if (details.cpuSockets != null && details.cpuPhysicalCores != null) {
+                                append(" (${details.cpuSockets}ソケット × ${details.cpuPhysicalCores}コア)")
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (details.rootfsTotalBytes != null) {
+                    Text(
+                        "ディスク: ${formatBytesAsGiB(details.rootfsUsedBytes)} / ${formatBytesAsGiB(details.rootfsTotalBytes)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (details.pveVersion != null || details.kernelVersion != null) {
+                    Text(
+                        "PVE: ${details.pveVersion ?: "-"} / Kernel: ${details.kernelVersion ?: "-"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 if (details.disks.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("ディスク型番", style = MaterialTheme.typography.labelMedium)
