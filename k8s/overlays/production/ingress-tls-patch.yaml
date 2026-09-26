@@ -3,7 +3,7 @@ kind: Ingress
 metadata:
   name: admin-panel
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/issuer: admin-panel-issuer
 spec:
   tls:
     - hosts:
