@@ -20,3 +20,10 @@ suspend fun fetchInfrastructureDetails(client: HttpClient, accessToken: String):
         bearerAuth(accessToken)
     }.body()
 }
+
+/** リソース使用量グラフ用の時系列を取得する(issue #132)。 */
+suspend fun fetchResourceUsage(client: HttpClient, accessToken: String, rangeMinutes: Int): ResourceUsageResponse {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/resource-usage?rangeMinutes=$rangeMinutes") {
+        bearerAuth(accessToken)
+    }.body()
+}

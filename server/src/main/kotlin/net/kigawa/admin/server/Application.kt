@@ -31,6 +31,8 @@ import io.ktor.server.routing.routing
 import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -77,6 +79,25 @@ data class TrafficPoint(
 data class TrafficResponse(
     @SerialName("rangeMinutes") val rangeMinutes: Int,
     @SerialName("series") val series: List<TrafficPoint>
+)
+
+/**
+ * インフラのリソース利用量グラフ用レスポンス(issue #132)。
+ * - physicalHosts: Proxmox rrddata による物理ホスト実使用量(CPU %, メモリ GiB)
+ * - k8sNodes: Prometheus(cAdvisor) によるK8sノードのコンテナ使用量(CPUコア, メモリ GiB)
+ */
+@Serializable
+data class InfrastructureResourceUsageResponse(
+    @SerialName("rangeMinutes") val rangeMinutes: Int,
+    @SerialName("physicalHosts") val physicalHosts: Map<String, PhysicalHostUsageDto> = emptyMap(),
+    @SerialName("k8sNodes") val k8sNodes: Map<String, K8sNodeUsageDto> = emptyMap()
+)
+
+/** K8sノード1台分のグラフ用時系列(issue #132)。 */
+@Serializable
+data class K8sNodeUsageDto(
+    @SerialName("cpuCores") val cpuCores: List<ResourceUsagePointDto> = emptyList(),
+    @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList()
 )
 
 @Serializable
@@ -595,6 +616,38 @@ fun Application.module() {
                 return@get
             }
             call.respond(fetchInfrastructureDetails())
+        }
+
+        // インフラのリソース利用量の時系列(物理ホスト=Proxmox rrddata / K8sノード=Prometheus
+        // cAdvisor)。グラフ表示用(issue #132)。rangeMinutes は15〜1440(既定60)で、グラフの
+        // 描画点を抑えるためトラフィック時系列と同じく最大120点程度に丸める。
+        get("/api/infrastructure/resource-usage") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val rangeMinutes =
+                call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(15, 1440) ?: 60
+
+            val (physicalHosts, k8sNodes) = coroutineScope {
+                val physicalDeferred = async { fetchPhysicalHostUsage(rangeMinutes) }
+                val k8sDeferred = async { fetchNodeResourceUsageSeries(rangeMinutes) }
+                physicalDeferred.await() to k8sDeferred.await()
+            }
+
+            call.respond(
+                InfrastructureResourceUsageResponse(
+                    rangeMinutes = rangeMinutes,
+                    physicalHosts = physicalHosts,
+                    k8sNodes = k8sNodes.mapValues { (_, series) ->
+                        K8sNodeUsageDto(
+                            cpuCores = series.cpuCores.map { (t, v) -> ResourceUsagePointDto(t, v) },
+                            memGiB = series.memGiB.map { (t, v) -> ResourceUsagePointDto(t, v) }
+                        )
+                    }
+                )
+            )
         }
 
         // GitHub App (kigawa-net, app_id 4316503) operation: mint scoped installation tokens

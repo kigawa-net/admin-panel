@@ -267,6 +267,8 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                 } else if (current.topology.hosts.isEmpty() && details != null && details!!.standaloneNodes.isEmpty()) {
                     SpanText("物理ホスト・ノードが見つかりませんでした", modifier = Modifier.color(Colors.Gray))
                 } else {
+                    // リソース利用量グラフ(issue #132)。ホスト一覧とは独立に読み込む。
+                    ResourceUsageSection(httpClient = httpClient, accessToken = accessToken)
                     current.topology.hosts.forEach { host ->
                         HostCard(
                             host = host,
