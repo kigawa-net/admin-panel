@@ -1,0 +1,17 @@
+apiVersion: k8s.bitwarden.com/v1
+kind: BitwardenSecret
+metadata:
+  name: admin-panel-org-service-bws
+spec:
+  organizationId: "a2b57f3d-6e2b-4467-b499-b31e00bfd804"
+  secretName: admin-panel-org-service-keycloak
+  authToken:
+    secretName: bitwarden-sec
+    secretKey: token
+  map:
+    # kigawa01/k8s-system の keycloak/admin-panel-org-service-keycloak-bws.yaml と同じ
+    # Bitwarden アイテム。k8s-system 側はKeycloakクライアントのシークレットを
+    # この値に揃えるためのもので、こちらはadmin-panel-api へ渡すためのもの。
+    # (Secretは名前空間跨ぎで参照できないため、两侧に同じアイテムから同期する)
+    - bwSecretId: "f12388da-b870-4804-852d-b4d300e89e9e" # admin-panel-org-service-keycloak-client-secret
+      secretKeyName: clientSecret

@@ -11,3 +11,4 @@ resources:
   - github-app-bws.yaml
   - node-ssh-bws.yaml
   - proxmox-bws.yaml
+  - org-bws.yaml
