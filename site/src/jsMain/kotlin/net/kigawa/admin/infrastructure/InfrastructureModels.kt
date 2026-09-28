@@ -66,6 +66,35 @@ data class InfrastructureDetails(
     val standaloneNodes: List<ServerStatus> = emptyList()
 )
 
+/** リソース使用量グラフの1サンプル(issue #132)。 */
+@Serializable
+data class ResourceUsagePoint(
+    val timestampSeconds: Long,
+    val value: Double
+)
+
+/** 物理ホスト(Proxmoxノード)のグラフ用時系列(issue #132)。 */
+@Serializable
+data class PhysicalHostUsageSeries(
+    val cpuPercent: List<ResourceUsagePoint> = emptyList(),
+    val memGiB: List<ResourceUsagePoint> = emptyList()
+)
+
+/** K8sノード1台分のグラフ用時系列(issue #132)。 */
+@Serializable
+data class K8sNodeUsageSeries(
+    val cpuCores: List<ResourceUsagePoint> = emptyList(),
+    val memGiB: List<ResourceUsagePoint> = emptyList()
+)
+
+/** /api/infrastructure/resource-usage のレスポンス(issue #132)。 */
+@Serializable
+data class ResourceUsageResponse(
+    val rangeMinutes: Int,
+    val physicalHosts: Map<String, PhysicalHostUsageSeries> = emptyMap(),
+    val k8sNodes: Map<String, K8sNodeUsageSeries> = emptyMap()
+)
+
 /** バイト数を読みやすいGiB表記に変換する。 */
 fun formatBytesAsGiB(bytes: Long?): String {
     if (bytes == null) return "-"

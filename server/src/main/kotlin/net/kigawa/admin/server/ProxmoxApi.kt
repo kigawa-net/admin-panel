@@ -190,6 +190,29 @@ data class InfrastructureDetailsDto(
     val standaloneNodes: List<ServerStatusDto> = emptyList()
 )
 
+/** リソース使用量グラフの1サンプル(issue #132)。 */
+@Serializable
+data class ResourceUsagePointDto(
+    @SerialName("timestampSeconds") val timestampSeconds: Long,
+    @SerialName("value") val value: Double
+)
+
+/** 物理ホスト(Proxmoxノード)のCPU・メモリ使用量のグラフ用時系列(issue #132)。 */
+@Serializable
+data class PhysicalHostUsageDto(
+    @SerialName("cpuPercent") val cpuPercent: List<ResourceUsagePointDto> = emptyList(),
+    @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList()
+)
+
+/** nodes/{node}/rrddata の1サンプル。CPUは0..1の割合、mem/maxmemはバイト。 */
+@Serializable
+private data class ProxmoxRrdDataDto(
+    val time: Long? = null,
+    val cpu: Double? = null,
+    val mem: Long? = null,
+    val maxmem: Long? = null
+)
+
 /**
  * Proxmoxは自己署名証明書のため、専用クライアントでのみ証明書検証を無効化する(共有httpClientには
  * 影響させない)。クラスタ内部の ExternalName Service 経由でのみ通信するため許容している。
@@ -362,6 +385,72 @@ suspend fun fetchInfrastructureDetails(): InfrastructureDetailsDto {
         client.close()
         logger.info("fetchInfrastructureDetails took ${System.currentTimeMillis() - start}ms")
     }
+}
+
+/**
+ * 物理ホストのCPU/メモリ使用量の時系列を Proxmox rrddata から取得する(issue #132)。
+ * rrddata の timeframe はサンプル解像度(5分/30分/2時間)を決めるだけで、要求範囲より広い
+ * 窓のデータが返るため、ここでは rangeMinutes 内のサンプルのみに絞り込む。
+ * 取得失敗時は該当ホストのエントリを欠落させる(呼び出し側は空マップとして処理する)。
+ */
+suspend fun fetchPhysicalHostUsage(rangeMinutes: Int): Map<String, PhysicalHostUsageDto> {
+    val auth = authHeader() ?: return emptyMap()
+    val client = buildProxmoxHttpClient()
+    try {
+        val nodes = try {
+            fetchNodes(client, auth, "Proxmox nodes fetch (resource-usage)")
+        } catch (e: Exception) {
+            logger.warn("Proxmox nodes fetch failed (resource-usage): ${e::class.qualifiedName}: ${e.message}", e)
+            return emptyMap()
+        }
+
+        val end = System.currentTimeMillis() / 1000
+        val start = end - rangeMinutes * 60L
+        val timeframe = when {
+            rangeMinutes <= 120 -> "hour"
+            rangeMinutes <= 720 -> "day"
+            else -> "week"
+        }
+
+        val results = coroutineScope {
+            nodes.filter { it.status == "online" }.map { node ->
+                async { node.node to fetchHostRrd(client, auth, node.node, timeframe, start, end) }
+            }.awaitAll()
+        }
+        return results.mapNotNull { (name, dto) -> dto?.let { name to it } }.toMap()
+    } finally {
+        client.close()
+    }
+}
+
+private suspend fun fetchHostRrd(
+    client: HttpClient,
+    auth: String,
+    nodeName: String,
+    timeframe: String,
+    start: Long,
+    end: Long
+): PhysicalHostUsageDto? = try {
+    val rows = withTimeoutRetry("Proxmox rrddata fetch for node $nodeName") {
+        client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/rrddata?timeframe=$timeframe&cf=AVERAGE") {
+            header("Authorization", auth)
+        }.body<ProxmoxEnvelope<List<ProxmoxRrdDataDto>>>().data
+    }
+    PhysicalHostUsageDto(
+        cpuPercent = rows.mapNotNull { row ->
+            val t = row.time ?: return@mapNotNull null
+            if (t !in start..end) return@mapNotNull null
+            row.cpu?.let { ResourceUsagePointDto(t, it * 100.0) }
+        },
+        memGiB = rows.mapNotNull { row ->
+            val t = row.time ?: return@mapNotNull null
+            if (t !in start..end) return@mapNotNull null
+            row.mem?.let { ResourceUsagePointDto(t, it / 1073741824.0) }
+        }
+    )
+} catch (e: Exception) {
+    logger.warn("Proxmox rrddata fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}", e)
+    null
 }
 
 private suspend fun fetchHostDetails(
