@@ -422,7 +422,10 @@ fun Application.module() {
             }
             val organizations = listOrganizations(httpClient)
             if (organizations == null) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "organization list unavailable"))
+                call.respond(
+                    HttpStatusCode.ServiceUnavailable,
+                    mapOf("error" to (organizationApiUnavailableReason() ?: "組織一覧を取得できませんでした"))
+                )
             } else {
                 call.respond(organizations)
             }
@@ -481,7 +484,10 @@ fun Application.module() {
             }
             val members = listOrganizationMembers(httpClient, orgId)
             if (members == null) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "member list unavailable"))
+                call.respond(
+                    HttpStatusCode.ServiceUnavailable,
+                    mapOf("error" to (organizationApiUnavailableReason() ?: "メンバー一覧を取得できませんでした"))
+                )
             } else {
                 call.respond(members)
             }
@@ -537,7 +543,10 @@ fun Application.module() {
             }
             val organizations = listMyOrganizations(httpClient, userId)
             if (organizations == null) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "organization list unavailable"))
+                call.respond(
+                    HttpStatusCode.ServiceUnavailable,
+                    mapOf("error" to (organizationApiUnavailableReason() ?: "組織一覧を取得できませんでした"))
+                )
             } else {
                 call.respond(organizations)
             }
@@ -556,7 +565,10 @@ fun Application.module() {
             }
             val users = searchKigawaNetUsers(httpClient, query)
             if (users == null) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "user search unavailable"))
+                call.respond(
+                    HttpStatusCode.ServiceUnavailable,
+                    mapOf("error" to (organizationApiUnavailableReason() ?: "ユーザー検索に失敗しました"))
+                )
             } else {
                 call.respond(users)
             }
