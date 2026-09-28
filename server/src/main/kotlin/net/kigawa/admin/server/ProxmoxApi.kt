@@ -2,7 +2,7 @@ package net.kigawa.admin.server
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.engine.cio.CIO
+import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
@@ -19,7 +19,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.IOException
+import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 
 private val logger = LoggerFactory.getLogger("ProxmoxApi")
@@ -190,6 +193,19 @@ data class InfrastructureDetailsDto(
 /**
  * Proxmoxは自己署名証明書のため、専用クライアントでのみ証明書検証を無効化する(共有httpClientには
  * 影響させない)。クラスタ内部の ExternalName Service 経由でのみ通信するため許容している。
+ *
+ * エンジンは CIO ではなく OkHttp を使う(issue #118)。Ktor CIO + 自己署名TLS はこの
+ * pveproxy 相手に事象依存で
+ *   - java.io.EOFException: Not enough data available
+ *   - Connection reset / server prematurely closed the connection
+ *   - 20秒の request タイムアウト到達
+ * を断続的に起こし、/api/infrastructure および /api/infrastructure/details 全体が
+ * 30〜60秒待たされる主因になっていた(本番ログで両 Pod 同時に確認)。
+ * 一方、同一クラスタ内からの curl / wget / 生JVM HttpsURLConnection は常に成功する
+ * (当ファイルの以前のコメントでも「wget/生JVMでは再現しない」と記録済み)。
+ * 素の OkHttp は curl に近い挙動をし、実機での動作も確認できるため、Proxmox専用
+ * クライアントのみエンジンを差し替える。Kubernetes API・Keycloak・Prometheus等の
+ * 他クライアントは CIO のまま(そちらでは問題が観測されていない)。
  */
 private fun buildProxmoxHttpClient(): HttpClient {
     val trustAllManager = object : X509TrustManager {
@@ -197,20 +213,22 @@ private fun buildProxmoxHttpClient(): HttpClient {
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
         override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
     }
-    return HttpClient(CIO) {
+    val sslContext = SSLContext.getInstance("TLS").apply {
+        init(null, arrayOf(trustAllManager), SecureRandom())
+    }
+    return HttpClient(OkHttp) {
         engine {
-            https {
-                trustManager = trustAllManager
+            config {
+                sslSocketFactory(sslContext.socketFactory, trustAllManager)
+                hostnameVerifier { _, _ -> true }
+                // CIO時代と同じ境界をOkHttp側にも設定(接続10秒・読み書き20秒)
+                connectTimeout(10_000, TimeUnit.MILLISECONDS)
+                readTimeout(20_000, TimeUnit.MILLISECONDS)
+                writeTimeout(20_000, TimeUnit.MILLISECONDS)
+                // OkHttp自身の自動リトライ(retryOnConnectionFailure)は無効化し、
+                // 下のwithTimeoutRetry(5秒間隔・1回のみ)に一本化する
+                retryOnConnectionFailure(false)
             }
-            // 以前ここでendpoint.keepAliveTime = 0を設定し、接続の使い回し(keep-alive)
-            // 自体を無効化しようとしていた。しかしKtor CIOの実装(ConnectionPipeline.kt)
-            // を確認したところ、keepAliveTimeは内部で
-            // `withTimeoutOrNull(keepAliveTime) { tasks.receive() }`という形で
-            // リクエスト処理ループ自体の待機タイムアウトとして使われており、0を渡すと
-            // このタイムアウトが実質ゼロになって正常にリクエストを処理できなくなる
-            // (=接続の使い回しどころか、単発のリクエスト処理自体が不安定になる)ことが
-            // 判明した。実機で見えていたEOFException/タイムアウトの一部は、Proxmox側では
-            // なくこの設定自体が原因だった可能性が高い。デフォルト値(5000ms)に戻す。
         }
         install(ClientContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
