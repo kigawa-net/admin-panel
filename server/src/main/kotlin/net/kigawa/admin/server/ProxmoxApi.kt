@@ -204,13 +204,13 @@ data class PhysicalHostUsageDto(
     @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList()
 )
 
-/** nodes/{node}/rrddata の1サンプル。CPUは0..1の割合、mem/maxmemはバイト。 */
+/** nodes/{node}/rrddata の1サンプル。CPUは0..1の割合、memused/memtotalはバイト。 */
 @Serializable
 private data class ProxmoxRrdDataDto(
     val time: Long? = null,
     val cpu: Double? = null,
-    val mem: Long? = null,
-    val maxmem: Long? = null
+    val memused: Double? = null,
+    val memtotal: Double? = null
 )
 
 /**
@@ -445,7 +445,7 @@ private suspend fun fetchHostRrd(
         memGiB = rows.mapNotNull { row ->
             val t = row.time ?: return@mapNotNull null
             if (t !in start..end) return@mapNotNull null
-            row.mem?.let { ResourceUsagePointDto(t, it / 1073741824.0) }
+            row.memused?.let { ResourceUsagePointDto(t, it / 1073741824.0) }
         }
     )
 } catch (e: Exception) {
