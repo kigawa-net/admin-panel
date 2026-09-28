@@ -73,7 +73,11 @@ fun OrganizationScreen(accessToken: String, isAdmin: Boolean, onBack: () -> Unit
             }
             OrganizationListUiState.Loaded(organizations)
         } catch (e: Exception) {
-            OrganizationListUiState.Error("組織一覧を取得できませんでした")
+            OrganizationListUiState.Error(
+                // サーバーの503応答には「サービスアカウント未設定」のように原因が詰まっている。
+                // 固定メッセージに落とすと原因が分からないので、サーバーの文言をそのまま出す。
+                e.message ?: "組織一覧を取得できませんでした"
+            )
         }
     }
 
@@ -290,7 +294,7 @@ private fun OrganizationMembersScreen(accessToken: String, organization: Organiz
         state = try {
             OrganizationMembersUiState.Loaded(fetchOrganizationMembers(httpClient, accessToken, organization.id).members)
         } catch (e: Exception) {
-            OrganizationMembersUiState.Error("メンバー一覧を取得できませんでした")
+            OrganizationMembersUiState.Error(e.message ?: "メンバー一覧を取得できませんでした")
         }
     }
 
