@@ -1,6 +1,10 @@
 package net.kigawa.admin.pages
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.varabyte.kobweb.compose.css.Cursor
 import com.varabyte.kobweb.compose.css.FontSize
 import com.varabyte.kobweb.compose.css.FontWeight
@@ -17,6 +21,7 @@ import com.varabyte.kobweb.silk.components.forms.Button
 import com.varabyte.kobweb.silk.components.text.SpanText
 import net.kigawa.admin.auth.AuthGuard
 import net.kigawa.admin.layout.AppShell
+import kotlinx.browser.localStorage
 import org.jetbrains.compose.web.css.*
 
 @Page
@@ -25,7 +30,21 @@ fun HomePage() {
     val ctx = rememberPageContext()
     AuthGuard { state, logout ->
         // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い
-        AppShell(isAdmin = true) {
+        var currentOrgId by remember { mutableStateOf<String?>(localStorage.getItem("selectedOrgId")) }
+        val onOrgChange: (String?) -> Unit = { orgId ->
+            currentOrgId = orgId
+            if (orgId != null) {
+                localStorage.setItem("selectedOrgId", orgId)
+            } else {
+                localStorage.removeItem("selectedOrgId")
+            }
+        }
+        AppShell(
+            isAdmin = true,
+            accessToken = state.accessToken,
+            currentOrgId = currentOrgId,
+            onOrgChange = onOrgChange
+        ) {
             DashboardPage(
                 username = state.username,
                 isAdmin = true,
