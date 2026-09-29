@@ -120,7 +120,8 @@ data class InfraDiskDto(
 @Serializable
 data class InfraPciDeviceDto(
     val name: String,
-    val vendor: String?
+    val vendor: String?,
+    val pciClass: String? = null
 )
 
 @Serializable
@@ -509,7 +510,7 @@ private suspend fun fetchHostDetails(
                 }
                 .mapNotNull { device ->
                     val name = device.deviceName ?: return@mapNotNull null
-                    InfraPciDeviceDto(name = name, vendor = device.vendorName)
+                    InfraPciDeviceDto(name = name, vendor = device.vendorName, pciClass = device.pciClass)
                 }
         } catch (e: Exception) {
             logger.warn("Proxmox PCI fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}")

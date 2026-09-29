@@ -269,6 +269,8 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                 } else {
                     // リソース利用量グラフ(issue #132)。ホスト一覧とは独立に読み込む。
                     ResourceUsageSection(httpClient = httpClient, accessToken = accessToken)
+                    // グルーピングされたリソース利用量(issue #147)
+                    GroupedResourceUsageSection(httpClient = httpClient, accessToken = accessToken)
                     current.topology.hosts.forEach { host ->
                         HostCard(
                             host = host,

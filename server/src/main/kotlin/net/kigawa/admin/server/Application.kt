@@ -97,6 +97,28 @@ data class K8sNodeUsageDto(
     @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList()
 )
 
+/**
+ * グルーピングされたリソース使用量(issue #147)。
+ * 複数のグルーピング軸(role/pciType/physicalHost)を一括返却し、
+ * フロント側でタブ切り替えできるようにする。
+ */
+@Serializable
+data class GroupedResourceUsageResponse(
+    @SerialName("rangeMinutes") val rangeMinutes: Int,
+    @SerialName("byRole") val byRole: Map<String, GroupedSeries> = emptyMap(),
+    @SerialName("byPciType") val byPciType: Map<String, GroupedSeries> = emptyMap(),
+    @SerialName("byPhysicalHost") val byPhysicalHost: Map<String, GroupedSeries> = emptyMap()
+)
+
+/** グループ化された1系列分の集約値(issue #147)。 */
+@Serializable
+data class GroupedSeries(
+    @SerialName("cpuCores") val cpuCores: List<ResourceUsagePointDto> = emptyList(),
+    @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList(),
+    @SerialName("nodeCount") val nodeCount: Int,
+    @SerialName("nodeNames") val nodeNames: List<String> = emptyList()
+)
+
 @Serializable
 private data class PrometheusQueryRangeResponse(
     val status: String? = null,
@@ -654,6 +676,66 @@ fun Application.module() {
             )
         }
 
+        // インフラのリソース使用量をグルーピングして集約した時系列(issue #147)。
+        // role / pciType / physicalHost の3軸で集約し、フロント側でタブ切り替えできるようにする。
+        get("/api/infrastructure/resource-usage-grouped") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val rangeMinutes =
+                call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(15, 1440) ?: 60
+
+            // ノード単位の生データを取得してから、各軸で集約する
+            val nodeSeries = fetchNodeResourceUsageSeries(rangeMinutes)
+            val infraDetails = fetchInfrastructureDetails()  // Proxmoxホスト-VMマッピング用
+
+            // ノード名 → PCIタイプ / 物理ホスト のマッピングを作成
+            val nodeToPciType = mutableMapOf<String, String>()
+            val nodeToPhysicalHost = mutableMapOf<String, String>()
+            val nodeToRole = mutableMapOf<String, String>()
+
+            // fetchServerStatuses() で role を取得
+            fetchServerStatuses()?.servers?.forEach { server ->
+                nodeToRole[server.name] = server.role
+            }
+
+            // infraDetails.hostDetails から VM→物理ホスト、PCIタイプを解決
+            infraDetails.hostDetails.forEach { (hostName, details) ->
+                details.vms.forEach { vm ->
+                    nodeToPhysicalHost[vm.name] = hostName
+                    // PCIタイプは最初のデバイスから代表的なものを決定
+                    val pciType = details.pciDevices.firstOrNull()?.let { classifyPciType(it) } ?: "Other"
+                    nodeToPciType[vm.name] = pciType
+                }
+                // standaloneNodes も対象
+                details.vms.forEach { vm ->
+                    if (!nodeToPhysicalHost.containsKey(vm.name)) {
+                        nodeToPhysicalHost[vm.name] = hostName
+                    }
+                }
+            }
+            infraDetails.standaloneNodes.forEach { node ->
+                nodeToPhysicalHost[node.name] = "standalone"
+                nodeToPciType[node.name] = "Other"
+            }
+
+            // 各軸で集約
+            val byRole = aggregateByKey(nodeSeries, nodeToRole)
+            val byPciType = aggregateByKey(nodeSeries, nodeToPciType)
+            val byPhysicalHost = aggregateByKey(nodeSeries, nodeToPhysicalHost)
+
+            call.respond(
+                GroupedResourceUsageResponse(
+                    rangeMinutes = rangeMinutes,
+                    byRole = byRole,
+                    byPciType = byPciType,
+                    byPhysicalHost = byPhysicalHost
+                )
+            )
+        }
+
         // GitHub App (kigawa-net, app_id 4316503) operation: mint scoped installation tokens
         // in place of the long-lived org PAT. Admin-only, since a minted token can act with up
         // to the App's full contents:write permission.
@@ -909,5 +991,58 @@ private suspend fun queryRange(
         val timestamp = pair.getOrNull(0)?.jsonPrimitive?.doubleOrNull?.toLong() ?: return@mapNotNull null
         val value = pair.getOrNull(1)?.jsonPrimitive?.content?.toDoubleOrNull() ?: return@mapNotNull null
         timestamp to value
+    }
+}
+
+/**
+ * PCIデバイスから代表的なタイプを分類する(issue #147)。
+ * 最初のPCIデバイスのクラス名から GPU / Storage / Network / Other を判定。
+ */
+private fun classifyPciType(device: InfraPciDeviceDto): String {
+    val className = device.pciClass?.lowercase() ?: return "Other"
+    return when {
+        className.contains("3d") || className.contains("vga") || className.contains("display") || className.contains("gpu") || className.contains("accelerator") -> "GPU"
+        className.contains("storage") || className.contains("raid") || className.contains("sata") || className.contains("nvme") || className.contains("scsi") -> "Storage"
+        className.contains("network") || className.contains("ethernet") || className.contains("infiniband") || className.contains("fibre") -> "Network"
+        else -> "Other"
+    }
+}
+
+/**
+ * ノード単位の時系列データを指定キー(role/pciType/physicalHost)で集約する(issue #147)。
+ * 各タイムスタンプごとに、同一キーのノードの値を合計(CPUはコア数合計、メモリはGiB合計)する。
+ */
+/**
+ * ノード単位の時系列データを指定キー(role/pciType/physicalHost)で集約する(issue #147)。
+ * 各タイムスタンプごとに、同一キーのノードの値を合計(CPUはコア数合計、メモリはGiB合計)する。
+ */
+private fun aggregateByKey(
+    nodeSeries: Map<String, NodeResourceUsageSeries>,
+    nodeToKey: Map<String, String>
+): Map<String, GroupedSeries> {
+    // キーごとのノード名リスト
+    val keyToNodes = nodeToKey.entries.groupBy { it.value }.mapValues { (_, entries) -> entries.map { it.key } }
+
+    return keyToNodes.mapValues { (key, nodes) ->
+        val relevantSeries = nodes.mapNotNull { nodeSeries[it] }.filter { it.cpuCores.isNotEmpty() || it.memGiB.isNotEmpty() }
+        if (relevantSeries.isEmpty()) {
+            GroupedSeries(nodeCount = nodes.size, nodeNames = nodes)
+        } else {
+            // タイムスタンプごとに値を合計
+            val allCpuPoints = relevantSeries.flatMap { it.cpuCores }.groupBy { it.first }.mapValues { (_, points) ->
+                points.sumOf { it.second }
+            }
+            val allMemPoints = relevantSeries.flatMap { it.memGiB }.groupBy { it.first }.mapValues { (_, points) ->
+                points.sumOf { it.second }
+            }
+            val cpuSorted = allCpuPoints.toList().sortedBy { it.first }.map { (ts, v) -> ResourceUsagePointDto(ts, v) }
+            val memSorted = allMemPoints.toList().sortedBy { it.first }.map { (ts, v) -> ResourceUsagePointDto(ts, v) }
+            GroupedSeries(
+                cpuCores = cpuSorted,
+                memGiB = memSorted,
+                nodeCount = nodes.size,
+                nodeNames = nodes
+            )
+        }
     }
 }

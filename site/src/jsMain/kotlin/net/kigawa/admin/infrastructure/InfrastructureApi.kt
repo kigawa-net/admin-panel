@@ -27,3 +27,10 @@ suspend fun fetchResourceUsage(client: HttpClient, accessToken: String, rangeMin
         bearerAuth(accessToken)
     }.body()
 }
+
+/** グルーピングされたリソース使用量を取得する(issue #147)。 */
+suspend fun fetchGroupedResourceUsage(client: HttpClient, accessToken: String, rangeMinutes: Int): GroupedResourceUsageResponse {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/resource-usage-grouped?rangeMinutes=$rangeMinutes") {
+        bearerAuth(accessToken)
+    }.body()
+}

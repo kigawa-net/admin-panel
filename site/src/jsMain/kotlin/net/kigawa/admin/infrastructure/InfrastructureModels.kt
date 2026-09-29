@@ -95,6 +95,24 @@ data class ResourceUsageResponse(
     val k8sNodes: Map<String, K8sNodeUsageSeries> = emptyMap()
 )
 
+/** グルーピングされた1系列分の集約値(issue #147)。 */
+@Serializable
+data class GroupedSeries(
+    val cpuCores: List<ResourceUsagePoint> = emptyList(),
+    val memGiB: List<ResourceUsagePoint> = emptyList(),
+    val nodeCount: Int,
+    val nodeNames: List<String> = emptyList()
+)
+
+/** グルーピングされたリソース使用量レスポンス(issue #147)。 */
+@Serializable
+data class GroupedResourceUsageResponse(
+    val rangeMinutes: Int,
+    val byRole: Map<String, GroupedSeries> = emptyMap(),
+    val byPciType: Map<String, GroupedSeries> = emptyMap(),
+    val byPhysicalHost: Map<String, GroupedSeries> = emptyMap()
+)
+
 /** バイト数を読みやすいGiB表記に変換する。 */
 fun formatBytesAsGiB(bytes: Long?): String {
     if (bytes == null) return "-"

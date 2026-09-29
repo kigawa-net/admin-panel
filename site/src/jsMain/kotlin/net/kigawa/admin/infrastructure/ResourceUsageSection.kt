@@ -329,3 +329,168 @@ private fun UsageLineChart(
         ctx.fill()
     }
 }
+
+/**
+ * グルーピングされたリソース使用量グラフ(issue #147)。
+ * role / pciType / physicalHost の3軸でタブ切り替え表示。
+ */
+@Composable
+fun GroupedResourceUsageSection(httpClient: HttpClient, accessToken: String) {
+    var rangeMinutes by remember { mutableStateOf(60) }
+    var data by remember { mutableStateOf<GroupedResourceUsageResponse?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var activeTab by remember { mutableStateOf(0) }  // 0: role, 1: pciType, 2: physicalHost
+
+    val TABS = listOf("役割別" to "byRole", "PCIe別" to "byPciType", "物理ホスト別" to "byPhysicalHost")
+
+    LaunchedEffect(rangeMinutes) {
+        loading = true
+        error = null
+        try {
+            data = fetchGroupedResourceUsage(httpClient, accessToken, rangeMinutes)
+        } catch (e: Throwable) {
+            error = e.message ?: "取得に失敗しました"
+            data = null
+        }
+        loading = false
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.px)
+            .backgroundColor(Colors.White)
+            .borderRadius(8.px)
+            .boxShadow(offsetX = 0.px, offsetY = 2.px, blurRadius = 8.px, color = rgba(0, 0, 0, 0.08)),
+        verticalArrangement = Arrangement.spacedBy(12.px)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SpanText("ノードグループ別リソース使用量", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.px)) {
+                RANGE_OPTIONS.forEach { (minutes, label) ->
+                    val active = rangeMinutes == minutes
+                    SpanText(
+                        label,
+                        modifier = Modifier
+                            .padding(leftRight = 10.px, topBottom = 6.px)
+                            .onClick { rangeMinutes = minutes }
+                            .cursor(if (active) Cursor.Default else Cursor.Pointer)
+                            .borderRadius(6.px)
+                            .let { if (active) it.backgroundColor(rgba(42, 120, 214, 0.15)) else it }
+                            .color(if (active) Color("#2A78D6") else Colors.Gray)
+                            .fontWeight(if (active) FontWeight.Bold else FontWeight.Normal)
+                            .fontSize(FontSize.Small)
+                    )
+                }
+            }
+        }
+
+        // タブ選択
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.px),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TABS.forEachIndexed { index, (label, _) ->
+                val active = activeTab == index
+                SpanText(
+                    label,
+                    modifier = Modifier
+                        .padding(leftRight = 16.px, topBottom = 8.px)
+                        .onClick { activeTab = index }
+                        .cursor(if (active) Cursor.Default else Cursor.Pointer)
+                        .borderRadius(6.px)
+                        .let { if (active) it.backgroundColor(rgba(42, 120, 214, 0.15)) else it }
+                        .color(if (active) Color("#2A78D6") else Colors.Gray)
+                        .fontWeight(if (active) FontWeight.Bold else FontWeight.Normal)
+                        .fontSize(FontSize.Small)
+                )
+            }
+        }
+
+        when {
+            loading -> SpanText(
+                "グループ別メトリクスを読み込み中...",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
+            error != null -> SpanText(
+                "取得に失敗しました: $error",
+                modifier = Modifier.color(Colors.Red).fontSize(FontSize.Small)
+            )
+            data != null -> {
+                val groups = when (activeTab) {
+                    0 -> data!!.byRole
+                    1 -> data!!.byPciType
+                    2 -> data!!.byPhysicalHost
+                    else -> emptyMap()
+                }
+                if (groups.isEmpty()) {
+                    SpanText("表示するデータがありません", modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small))
+                } else {
+                    groups.entries.sortedBy { it.key }.forEach { (groupName, series) ->
+                        GroupedSeriesCard(
+                            groupName = groupName,
+                            series = series,
+                            groupCount = series.nodeCount
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** グループ単位のカード(CPU/メモリ2本のグラフ + ノード数表示) */
+@Composable
+private fun GroupedSeriesCard(
+    groupName: String,
+    series: GroupedSeries,
+    groupCount: Int
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(12.px)
+            .backgroundColor(rgba(0, 0, 0, 0.03))
+            .borderRadius(8.px),
+        verticalArrangement = Arrangement.spacedBy(8.px)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SpanText(groupName, modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium))
+            SpanText(
+                "$groupCount ノード",
+                modifier = Modifier.fontSize(FontSize.Small).color(Colors.Gray)
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(16.px)
+        ) {
+            UsageChartCard(
+                title = "CPU",
+                points = series.cpuCores,
+                fixedMax = null,
+                color = CPU_COLOR,
+                canvasId = "grouped-cpu-${groupName}-${kotlin.random.Random.nextLong()}",
+                formatValue = { v -> "${kotlin.math.round(v * 100) / 100}コア" }
+            )
+            UsageChartCard(
+                title = "メモリ",
+                points = series.memGiB,
+                fixedMax = null,
+                color = MEMORY_COLOR,
+                canvasId = "grouped-mem-${groupName}-${kotlin.random.Random.nextLong()}",
+                formatValue = { v -> "${kotlin.math.round(v * 10) / 10} GiB" }
+            )
+        }
+    }
+}
