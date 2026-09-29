@@ -118,7 +118,11 @@ data class GroupedSeries(
     @SerialName("cpuCores") val cpuCores: List<ResourceUsagePointDto> = emptyList(),
     @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList(),
     @SerialName("nodeCount") val nodeCount: Int,
-    @SerialName("nodeNames") val nodeNames: List<String> = emptyList()
+    @SerialName("nodeNames") val nodeNames: List<String> = emptyList(),
+    /** グループ内ノードのCPU容量合計(コア)。容量不明のノードは除外し、全不明時はnull。 */
+    @SerialName("cpuCapacityCores") val cpuCapacityCores: Double? = null,
+    /** グループ内ノードのメモリ容量合計(GiB)。同上。 */
+    @SerialName("memCapacityGiB") val memCapacityGiB: Double? = null
 )
 
 @Serializable
@@ -765,6 +769,12 @@ fun Application.module() {
                     memGiB = dto.memGiB.map { it.timestampSeconds to it.value }
                 )
             }
+            // グループ容量合計用にノード単位の容量を保持(容量不明ノードは除外)
+            val nodeCapacity = nodeSeriesRaw.mapNotNull { (name, dto) ->
+                val cpu = dto.cpuCapacityCores?.toDouble()
+                val mem = dto.memCapacityGiB
+                if (cpu == null && mem == null) null else name to ((cpu ?: 0.0) to (mem ?: 0.0))
+            }.toMap()
 
             // ノード名 → PCIタイプ / 物理ホスト のマッピングを作成
             val nodeToPciType = mutableMapOf<String, String>()
@@ -797,9 +807,9 @@ fun Application.module() {
             }
 
             // 各軸で集約
-            val byRole = aggregateByKey(nodeSeries, nodeToRole)
-            val byPciType = aggregateByKey(nodeSeries, nodeToPciType)
-            val byPhysicalHost = aggregateByKey(nodeSeries, nodeToPhysicalHost)
+            val byRole = aggregateByKey(nodeSeries, nodeToRole, nodeCapacity)
+            val byPciType = aggregateByKey(nodeSeries, nodeToPciType, nodeCapacity)
+            val byPhysicalHost = aggregateByKey(nodeSeries, nodeToPhysicalHost, nodeCapacity)
 
             call.respond(
                 GroupedResourceUsageResponse(
@@ -1093,15 +1103,25 @@ private fun classifyPciType(device: InfraPciDeviceDto): String {
  */
 private fun aggregateByKey(
     nodeSeries: Map<String, NodeResourceUsageSeries>,
-    nodeToKey: Map<String, String>
+    nodeToKey: Map<String, String>,
+    nodeCapacity: Map<String, Pair<Double, Double>> = emptyMap()
 ): Map<String, GroupedSeries> {
     // キーごとのノード名リスト
     val keyToNodes = nodeToKey.entries.groupBy { it.value }.mapValues { (_, entries) -> entries.map { it.key } }
 
     return keyToNodes.mapValues { (key, nodes) ->
         val relevantSeries = nodes.mapNotNull { nodeSeries[it] }.filter { it.cpuCores.isNotEmpty() || it.memGiB.isNotEmpty() }
+        // グループ内ノードの容量合計(容量不明ノードは除外し、全不明時はnull)
+        val capacities = nodes.mapNotNull { nodeCapacity[it] }
+        val cpuCapacitySum = capacities.sumOf { it.first }.takeIf { capacities.any { it.first > 0 } }
+        val memCapacitySum = capacities.sumOf { it.second }.takeIf { capacities.any { it.second > 0 } }
         if (relevantSeries.isEmpty()) {
-            GroupedSeries(nodeCount = nodes.size, nodeNames = nodes)
+            GroupedSeries(
+                nodeCount = nodes.size,
+                nodeNames = nodes,
+                cpuCapacityCores = cpuCapacitySum,
+                memCapacityGiB = memCapacitySum
+            )
         } else {
             // タイムスタンプごとに値を合計
             val allCpuPoints = relevantSeries.flatMap { it.cpuCores }.groupBy { it.first }.mapValues { (_, points) ->
@@ -1116,7 +1136,9 @@ private fun aggregateByKey(
                 cpuCores = cpuSorted,
                 memGiB = memSorted,
                 nodeCount = nodes.size,
-                nodeNames = nodes
+                nodeNames = nodes,
+                cpuCapacityCores = cpuCapacitySum,
+                memCapacityGiB = memCapacitySum
             )
         }
     }

@@ -83,14 +83,18 @@ data class ResourceUsagePoint(
 @Serializable
 data class PhysicalHostUsageSeries(
     val cpuPercent: List<ResourceUsagePoint> = emptyList(),
-    val memGiB: List<ResourceUsagePoint> = emptyList()
+    val memGiB: List<ResourceUsagePoint> = emptyList(),
+    val maxCpuCores: Int? = null,
+    val maxMemGiB: Double? = null
 )
 
 /** K8sノード1台分のグラフ用時系列(issue #132)。 */
 @Serializable
 data class K8sNodeUsageSeries(
     val cpuCores: List<ResourceUsagePoint> = emptyList(),
-    val memGiB: List<ResourceUsagePoint> = emptyList()
+    val memGiB: List<ResourceUsagePoint> = emptyList(),
+    val cpuCapacityCores: Int? = null,
+    val memCapacityGiB: Double? = null
 )
 
 /** /api/infrastructure/resource-usage のレスポンス(issue #132)。 */
@@ -107,7 +111,9 @@ data class GroupedSeries(
     val cpuCores: List<ResourceUsagePoint> = emptyList(),
     val memGiB: List<ResourceUsagePoint> = emptyList(),
     val nodeCount: Int,
-    val nodeNames: List<String> = emptyList()
+    val nodeNames: List<String> = emptyList(),
+    val cpuCapacityCores: Double? = null,
+    val memCapacityGiB: Double? = null
 )
 
 /** グルーピングされたリソース使用量レスポンス(issue #147)。 */

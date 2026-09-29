@@ -129,15 +129,17 @@ fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
                                 fixedMax = 100.0,
                                 color = CPU_COLOR,
                                 canvasId = "usage-cpu-$hostName-$rangeMinutes",
-                                formatValue = { v -> "${round(v * 10) / 10}%" }
+                                formatValue = { v -> "${round(v * 10) / 10}%" },
+                                capacityLabel = series.maxCpuCores?.let { "容量 $it コア" }
                             )
                             UsageChartCard(
                                 title = "$hostName · メモリ",
                                 points = series.memGiB,
-                                fixedMax = null,
+                                fixedMax = series.maxMemGiB,
                                 color = MEMORY_COLOR,
                                 canvasId = "usage-mem-$hostName-$rangeMinutes",
-                                formatValue = { v -> "${round(v * 10) / 10} GiB" }
+                                formatValue = { v -> "${round(v * 10) / 10} GiB" },
+                                capacityLabel = series.maxMemGiB?.let { "容量 ${round(it * 10) / 10} GiB" }
                             )
                         }
                     }
@@ -155,18 +157,20 @@ fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
                             UsageChartCard(
                                 title = "$nodeName · CPU",
                                 points = series.cpuCores,
-                                fixedMax = null,
+                                fixedMax = series.cpuCapacityCores?.toDouble(),
                                 color = CPU_COLOR,
                                 canvasId = "usage-kcpu-$nodeName-$rangeMinutes",
-                                formatValue = { v -> "${round(v * 100) / 100}コア" }
+                                formatValue = { v -> "${round(v * 100) / 100}コア" },
+                                capacityLabel = series.cpuCapacityCores?.let { "容量 $it コア" }
                             )
                             UsageChartCard(
                                 title = "$nodeName · メモリ",
                                 points = series.memGiB,
-                                fixedMax = null,
+                                fixedMax = series.memCapacityGiB,
                                 color = MEMORY_COLOR,
                                 canvasId = "usage-kmem-$nodeName-$rangeMinutes",
-                                formatValue = { v -> "${round(v * 10) / 10} GiB" }
+                                formatValue = { v -> "${round(v * 10) / 10} GiB" },
+                                capacityLabel = series.memCapacityGiB?.let { "容量 ${round(it * 10) / 10} GiB" }
                             )
                         }
                     }
@@ -182,7 +186,7 @@ fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
     }
 }
 
-/** 1メトリック分のチャートカード(タイトル+現在値/最大値ラベル+折れ線)。 */
+/** 1メトリック分のチャートカード(タイトル+現在値/最大値/容量ラベル+折れ線)。 */
 @Composable
 private fun UsageChartCard(
     title: String,
@@ -190,7 +194,8 @@ private fun UsageChartCard(
     fixedMax: Double?,
     color: String,
     canvasId: String,
-    formatValue: (Double) -> String
+    formatValue: (Double) -> String,
+    capacityLabel: String? = null
 ) {
     Column(
         modifier = Modifier
@@ -210,7 +215,8 @@ private fun UsageChartCard(
             SpanText(title, modifier = Modifier.fontSize(FontSize.Small).fontWeight(FontWeight.Bold))
             SpanText(
                 (current?.let { "現在 ${formatValue(it)}" } ?: "データなし") +
-                    (if (max != null && current != null) " / 最大 ${formatValue(max)}" else ""),
+                    (if (max != null && current != null) " / 最大 ${formatValue(max)}" else "") +
+                    (capacityLabel?.let { " ($it)" } ?: ""),
                 modifier = Modifier.fontSize(FontSize.Small).color(Colors.Gray)
             )
         }
@@ -478,18 +484,20 @@ private fun GroupedSeriesCard(
             UsageChartCard(
                 title = "CPU",
                 points = series.cpuCores,
-                fixedMax = null,
+                fixedMax = series.cpuCapacityCores,
                 color = CPU_COLOR,
                 canvasId = "grouped-cpu-${groupName}-${kotlin.random.Random.nextLong()}",
-                formatValue = { v -> "${kotlin.math.round(v * 100) / 100}コア" }
+                formatValue = { v -> "${kotlin.math.round(v * 100) / 100}コア" },
+                capacityLabel = series.cpuCapacityCores?.let { "容量 ${kotlin.math.round(it * 100) / 100}コア" }
             )
             UsageChartCard(
                 title = "メモリ",
                 points = series.memGiB,
-                fixedMax = null,
+                fixedMax = series.memCapacityGiB,
                 color = MEMORY_COLOR,
                 canvasId = "grouped-mem-${groupName}-${kotlin.random.Random.nextLong()}",
-                formatValue = { v -> "${kotlin.math.round(v * 10) / 10} GiB" }
+                formatValue = { v -> "${kotlin.math.round(v * 10) / 10} GiB" },
+                capacityLabel = series.memCapacityGiB?.let { "容量 ${kotlin.math.round(it * 10) / 10} GiB" }
             )
         }
     }
