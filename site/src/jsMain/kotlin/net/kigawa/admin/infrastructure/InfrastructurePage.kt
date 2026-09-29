@@ -38,6 +38,7 @@ import net.kigawa.admin.servers.ServerStatus
 import net.kigawa.admin.servers.cordonNode
 import net.kigawa.admin.servers.deletePod
 import net.kigawa.admin.servers.drainNode
+import net.kigawa.admin.servers.fetchServerStatuses
 import net.kigawa.admin.servers.gracefulRebootNode
 import net.kigawa.admin.servers.gracefulShutdownNode
 import net.kigawa.admin.servers.promptDrainTimeoutAndConfirm
@@ -55,10 +56,16 @@ private sealed class InfrastructureUiState {
 @Composable
 fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     var state by remember { mutableStateOf<InfrastructureUiState>(InfrastructureUiState.Loading) }
-    // ホスト一覧(/api/infrastructure)より後から、VM/ディスク/PCIの詳細
-    // (/api/infrastructure/details)を非同期に読み込む。読み込み中はnullのままにし、
-    // 「まだ届いていない」ことと「届いたが空だった」ことを区別する。
-    var details by remember { mutableStateOf<InfrastructureDetails?>(null) }
+    // ホスト一覧(/api/infrastructure)より後から、ホスト×カテゴリ単位の詳細
+    // (/api/infrastructure/hosts/{host}/{vms,disks,pci,hw-status})を並列に読み込む。
+    // 届いた部分から順次描画し、completedSectionsで「まだ届いていない」ことと
+    // 「届いたが空だった」ことを区別する(issue #158)。
+    var hostVms by remember { mutableStateOf<Map<String, List<InfraVm>>>(emptyMap()) }
+    var hostDisks by remember { mutableStateOf<Map<String, List<InfraDisk>>>(emptyMap()) }
+    var hostPci by remember { mutableStateOf<Map<String, List<InfraPciDevice>>>(emptyMap()) }
+    var hostHw by remember { mutableStateOf<Map<String, InfraHostHwStatus>>(emptyMap()) }
+    var completedSections by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var servers by remember { mutableStateOf<List<ServerStatus>?>(null) }
     var refreshKey by remember { mutableStateOf(0) }
     // issue #116でサーバー管理ページを統合した際に持ち込んだ状態。Cordon/Drain/
     // シャットダウン/再起動の実行結果メッセージと、実行中の非同期操作の完了待ち追跡。
@@ -82,15 +89,58 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     // のみで再実行されるようにする。
     val currentAccessToken by rememberUpdatedState(accessToken)
 
+    val hostNames = (state as? InfrastructureUiState.Loaded)?.topology?.hosts?.map { it.name } ?: emptyList()
+    /** 全ホストのVM一覧が出揃ったかどうか。standaloneノードの算出とpending解決の条件。 */
+    val vmsSectionsDone = hostNames.all { "$it/vms" in completedSections }
+
     /** matchedVM・物理専用ノードの両方をまとめた、現在表示中の全K8sノード。pendingOperationsの解決判定に使う。 */
-    fun allKnownNodes(currentDetails: InfrastructureDetails?): List<ServerStatus> {
-        if (currentDetails == null) return emptyList()
-        val matchedFromVms = currentDetails.hostDetails.values.flatMap { it.vms }.mapNotNull { it.matchedNode }
-        return currentDetails.standaloneNodes + matchedFromVms
+    fun allKnownNodes(standalone: List<ServerStatus>?): List<ServerStatus> {
+        val matchedFromVms = hostVms.values.flatten().mapNotNull { it.matchedNode }
+        return (standalone ?: emptyList()) + matchedFromVms
     }
 
+    /** VM一覧とサーバー一覧が出揃ったら、VMに紐付かなかったK8sノードを物理専用ノードとする。 */
+    val standaloneNodes: List<ServerStatus>? =
+        if (servers != null && vmsSectionsDone) {
+            val matchedNames = hostVms.values.flatten().mapNotNull { it.matchedNode?.name }.toSet()
+            servers!!.filter { it.name !in matchedNames }.sortedBy { it.name }
+        } else {
+            null
+        }
+
+    /** 指定ホストに届いた部分をマージした詳細。何も届いていなければnull(読み込み中表示用)。 */
+    fun mergedDetails(hostName: String): InfraHostDetails? {
+        if (!hostVms.containsKey(hostName) && !hostDisks.containsKey(hostName) &&
+            !hostPci.containsKey(hostName) && !hostHw.containsKey(hostName)
+        ) {
+            return null
+        }
+        val hw = hostHw[hostName]
+        return InfraHostDetails(
+            disks = hostDisks[hostName].orEmpty(),
+            pciDevices = hostPci[hostName].orEmpty(),
+            vms = hostVms[hostName].orEmpty(),
+            cpuModel = hw?.cpuModel,
+            cpuSockets = hw?.cpuSockets,
+            cpuPhysicalCores = hw?.cpuPhysicalCores,
+            kernelVersion = hw?.kernelVersion,
+            pveVersion = hw?.pveVersion,
+            rootfsTotalBytes = hw?.rootfsTotalBytes,
+            rootfsUsedBytes = hw?.rootfsUsedBytes
+        )
+    }
+
+    /** 指定ホストで未完了のカテゴリ集合。HostCard内の区分ごとの読み込み中表示に使う。 */
+    fun pendingCategories(hostName: String): Set<String> =
+        setOf("vms", "disks", "pci", "hw").filter { "$hostName/$it" !in completedSections }.toSet()
+
     LaunchedEffect(refreshKey) {
-        details = null
+        hostVms = emptyMap()
+        hostDisks = emptyMap()
+        hostPci = emptyMap()
+        hostHw = emptyMap()
+        completedSections = emptySet()
+        servers = null
         val topology = try {
             fetchInfrastructureTopology(httpClient, currentAccessToken)
         } catch (e: Throwable) {
@@ -101,43 +151,91 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
             state = InfrastructureUiState.Error("インフラ構成を取得できませんでした")
             return@LaunchedEffect
         }
-        // まずホスト一覧(高速パス)だけで画面を表示し、続けてVM/ディスク/PCIの詳細を
-        // 非同期に読み込む。詳細取得が遅延・失敗してもホスト一覧の表示自体は妨げない。
+        // まずホスト一覧(高速パス)だけで画面を表示する。VM/ディスク/PCI等の詳細は
+        // 下のLaunchedEffectでホスト×カテゴリ単位に並列取得し、届いた部分から順次描画する。
         state = InfrastructureUiState.Loaded(topology)
-        val fetchedDetails = try {
-            fetchInfrastructureDetails(httpClient, currentAccessToken)
-        } catch (e: Throwable) {
-            null
-        }
-        details = fetchedDetails
+    }
 
-        if (fetchedDetails != null) {
-            val nodes = allKnownNodes(fetchedDetails)
-            val stillPending = mutableMapOf<String, PendingOperationState>()
-            pendingOperations.forEach { (nodeId, opState) ->
-                val node = nodes.find { it.id == nodeId }
-                if (node == null) {
-                    // ノード自体が消えた(一覧から見えなくなった)場合はこれ以上追跡できない
-                    return@forEach
-                }
-                val sawNotReady = opState.sawNotReady || !node.ready
-                val resolved = when (opState.operation) {
-                    // 開始直後はまだReady=trueのままなので、一度NotReadyを確認してからでないと
-                    // 「完了」とみなさない(でなければ落ちる前に完了扱いになってしまう)
-                    PendingOperation.REBOOTING -> sawNotReady && node.ready
-                    PendingOperation.SHUTTING_DOWN -> !node.ready
-                }
-                if (resolved) {
-                    statusMessage = when (opState.operation) {
-                        PendingOperation.REBOOTING -> "${node.name} の再起動が完了しました"
-                        PendingOperation.SHUTTING_DOWN -> "${node.name} のシャットダウンが完了しました"
-                    }
-                } else {
-                    stillPending[nodeId] = opState.copy(sawNotReady = sawNotReady)
+    // ホスト×カテゴリ単位の並列取得(issue #158)。各launchはこのエフェクトの子なので、
+    // refreshKeyやホスト一覧の変化で自動キャンセルされ、古い応答が新しい状態に混ざらない。
+    // 1カテゴリの取得は他と独立しているため、低速なカテゴリが他を道連れにしない。
+    LaunchedEffect(refreshKey, hostNames) {
+        if (hostNames.isEmpty()) return@LaunchedEffect
+        fun markComplete(key: String) {
+            completedSections = completedSections + key
+        }
+        hostNames.forEach { hostName ->
+            launch {
+                try {
+                    hostVms = hostVms + (hostName to fetchHostVms(httpClient, currentAccessToken, hostName))
+                } catch (e: Throwable) {
+                    // 失敗時は空のまま完了扱い(既存のグレースフルデグラデーション方針)
+                } finally {
+                    markComplete("$hostName/vms")
                 }
             }
-            pendingOperations = stillPending
+            launch {
+                try {
+                    hostDisks = hostDisks + (hostName to fetchHostDisks(httpClient, currentAccessToken, hostName))
+                } catch (e: Throwable) {
+                } finally {
+                    markComplete("$hostName/disks")
+                }
+            }
+            launch {
+                try {
+                    hostPci = hostPci + (hostName to fetchHostPciDevices(httpClient, currentAccessToken, hostName))
+                } catch (e: Throwable) {
+                } finally {
+                    markComplete("$hostName/pci")
+                }
+            }
+            launch {
+                try {
+                    hostHw = hostHw + (hostName to fetchHostHwStatus(httpClient, currentAccessToken, hostName))
+                } catch (e: Throwable) {
+                } finally {
+                    markComplete("$hostName/hw")
+                }
+            }
         }
+        launch {
+            try {
+                servers = fetchServerStatuses(httpClient, currentAccessToken).servers
+            } catch (e: Throwable) {
+                servers = emptyList()
+            }
+        }
+    }
+
+    // VM一覧とサーバー一覧が出揃うたびにpending操作の解決判定を行う。
+    LaunchedEffect(hostVms, servers) {
+        if (!vmsSectionsDone || servers == null) return@LaunchedEffect
+        val nodes = allKnownNodes(standaloneNodes)
+        val stillPending = mutableMapOf<String, PendingOperationState>()
+        pendingOperations.forEach { (nodeId, opState) ->
+            val node = nodes.find { it.id == nodeId }
+            if (node == null) {
+                // ノード自体が消えた(一覧から見えなくなった)場合はこれ以上追跡できない
+                return@forEach
+            }
+            val sawNotReady = opState.sawNotReady || !node.ready
+            val resolved = when (opState.operation) {
+                // 開始直後はまだReady=trueのままなので、一度NotReadyを確認してからでないと
+                // 「完了」とみなさない(でなければ落ちる前に完了扱いになってしまう)
+                PendingOperation.REBOOTING -> sawNotReady && node.ready
+                PendingOperation.SHUTTING_DOWN -> !node.ready
+            }
+            if (resolved) {
+                statusMessage = when (opState.operation) {
+                    PendingOperation.REBOOTING -> "${node.name} の再起動が完了しました"
+                    PendingOperation.SHUTTING_DOWN -> "${node.name} のシャットダウンが完了しました"
+                }
+            } else {
+                stillPending[nodeId] = opState.copy(sawNotReady = sawNotReady)
+            }
+        }
+        pendingOperations = stillPending
     }
 
     LaunchedEffect(Unit) {
@@ -264,7 +362,7 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                         "Proxmoxに接続できませんでした。しばらくしてからもう一度お試しください。",
                         onRetry = { refreshKey++ }
                     )
-                } else if (current.topology.hosts.isEmpty() && details != null && details!!.standaloneNodes.isEmpty()) {
+                } else if (current.topology.hosts.isEmpty() && standaloneNodes != null && standaloneNodes.isEmpty()) {
                     SpanText("物理ホスト・ノードが見つかりませんでした", modifier = Modifier.color(Colors.Gray))
                 } else {
                     // リソース利用量グラフ(issue #132)。ホスト一覧とは独立に読み込む。
@@ -274,25 +372,26 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                     current.topology.hosts.forEach { host ->
                         HostCard(
                             host = host,
-                            details = details?.hostDetails?.get(host.name),
+                            details = mergedDetails(host.name),
+                            pendingCategories = pendingCategories(host.name),
                             pendingOperations = pendingOperations,
                             httpClient = httpClient,
                             accessToken = accessToken,
                             buildActions = ::buildActions
                         )
                     }
-                    val currentDetails = details
-                    if (currentDetails == null) {
+                    val currentStandalone = standaloneNodes
+                    if (currentStandalone == null) {
                         SpanText(
                             "詳細情報を読み込み中...",
                             modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small).padding(top = 4.px)
                         )
-                    } else if (currentDetails.standaloneNodes.isNotEmpty()) {
+                    } else if (currentStandalone.isNotEmpty()) {
                         SpanText(
                             "物理専用ノード(VM化されていないK8sノード)",
                             modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium).padding(top = 8.px)
                         )
-                        currentDetails.standaloneNodes.forEach { node ->
+                        currentStandalone.forEach { node ->
                             ServerCard(
                                 server = node,
                                 pendingOperation = pendingOperations[node.id]?.operation,
@@ -312,6 +411,8 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
 private fun HostCard(
     host: InfraHost,
     details: InfraHostDetails?,
+    /** 未完了のカテゴリ集合("vms"/"disks"/"pci"/"hw")。区分ごとの読み込み中表示に使う。 */
+    pendingCategories: Set<String>,
     pendingOperations: Map<String, PendingOperationState>,
     httpClient: HttpClient,
     accessToken: String,
@@ -348,7 +449,8 @@ private fun HostCard(
         } else {
             // CPUモデル・ディスク総容量・PVE/カーネルバージョンは、ノードごとに追加の
             // status呼び出しが必要なため詳細(details)側にある(issue #118でホスト一覧の
-            // 高速パスから移動した)。
+            // 高速パスから移動した)。各区分は独立に非同期取得されるため(issue #158)、
+            // 未完了の区分は読み込み中表示を出す。
             if (details.cpuModel != null) {
                 SpanText(
                     buildString {
@@ -357,6 +459,11 @@ private fun HostCard(
                             append(" (${details.cpuSockets}ソケット × ${details.cpuPhysicalCores}コア)")
                         }
                     },
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            } else if ("hw" in pendingCategories) {
+                SpanText(
+                    "ハードウェア情報を読み込み中...",
                     modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
                 )
             }
@@ -372,7 +479,12 @@ private fun HostCard(
                     modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
                 )
             }
-            if (details.disks.isNotEmpty()) {
+            if ("disks" in pendingCategories) {
+                SpanText(
+                    "ディスク情報を読み込み中...",
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            } else if (details.disks.isNotEmpty()) {
                 Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
                     SpanText("ディスク型番", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
                     details.disks.forEach { disk ->
@@ -383,7 +495,12 @@ private fun HostCard(
                     }
                 }
             }
-            if (details.pciDevices.isNotEmpty()) {
+            if ("pci" in pendingCategories) {
+                SpanText(
+                    "拡張デバイス情報を読み込み中...",
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            } else if (details.pciDevices.isNotEmpty()) {
                 Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
                     SpanText("拡張デバイス", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
                     details.pciDevices.forEach { device ->
@@ -395,7 +512,12 @@ private fun HostCard(
                 }
             }
 
-            if (details.vms.isEmpty()) {
+            if ("vms" in pendingCategories) {
+                SpanText(
+                    "VM一覧を読み込み中...",
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            } else if (details.vms.isEmpty()) {
                 SpanText(
                     if (host.online) "稼働中のVMはありません" else "オフラインのため不明",
                     modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)

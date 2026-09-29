@@ -646,6 +646,8 @@ fun Application.module() {
 
         // 物理ホストごとのVM一覧・ディスク・PCIデバイス詳細、およびVMとして見つからなかった
         // K8sノード(物理専用ノード)一覧。管理者限定。
+        // composeAppとresource-usage-grouped集約が利用する一括取得用。siteのインフラ構成
+        // ページは下のホスト×カテゴリ単位の細粒度エンドポイントを使い、届いた部分から順次描画する。
         get("/api/infrastructure/details") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
             if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
@@ -653,6 +655,65 @@ fun Application.module() {
                 return@get
             }
             call.respond(fetchInfrastructureDetails())
+        }
+
+        // ホスト×カテゴリ単位の細粒度取得(issue #158)。フロントはこれらを並列に叩き、
+        // 届いた部分から順次描画するため、低速なカテゴリが他を道連れにしない。
+        // 失敗時は空コンテンツで200を返す(既存のグレースフルデグラデーション方針)。
+        get("/api/infrastructure/hosts/{host}/vms") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val hostName = call.parameters["host"]
+            if (hostName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                return@get
+            }
+            call.respond(fetchSingleHostVms(hostName))
+        }
+
+        get("/api/infrastructure/hosts/{host}/disks") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val hostName = call.parameters["host"]
+            if (hostName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                return@get
+            }
+            call.respond(fetchSingleHostDisks(hostName))
+        }
+
+        get("/api/infrastructure/hosts/{host}/pci") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val hostName = call.parameters["host"]
+            if (hostName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                return@get
+            }
+            call.respond(fetchSingleHostPciDevices(hostName))
+        }
+
+        get("/api/infrastructure/hosts/{host}/hw-status") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            val hostName = call.parameters["host"]
+            if (hostName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                return@get
+            }
+            call.respond(fetchSingleHostHwStatus(hostName))
         }
 
         // インフラのリソース利用量の時系列(物理ホスト=Proxmox rrddata / K8sノード=Prometheus

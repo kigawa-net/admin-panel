@@ -15,8 +15,27 @@ suspend fun fetchInfrastructureTopology(client: HttpClient, accessToken: String)
     }.body()
 }
 
-suspend fun fetchInfrastructureDetails(client: HttpClient, accessToken: String): InfrastructureDetails {
-    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/details") {
+/** ホスト×カテゴリ単位の細粒度取得(issue #158)。呼び出し側で並列に叩き、届いた部分から順次描画する。 */
+suspend fun fetchHostVms(client: HttpClient, accessToken: String, hostName: String): List<InfraVm> {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/hosts/$hostName/vms") {
+        bearerAuth(accessToken)
+    }.body()
+}
+
+suspend fun fetchHostDisks(client: HttpClient, accessToken: String, hostName: String): List<InfraDisk> {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/hosts/$hostName/disks") {
+        bearerAuth(accessToken)
+    }.body()
+}
+
+suspend fun fetchHostPciDevices(client: HttpClient, accessToken: String, hostName: String): List<InfraPciDevice> {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/hosts/$hostName/pci") {
+        bearerAuth(accessToken)
+    }.body()
+}
+
+suspend fun fetchHostHwStatus(client: HttpClient, accessToken: String, hostName: String): InfraHostHwStatus {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/hosts/$hostName/hw-status") {
         bearerAuth(accessToken)
     }.body()
 }

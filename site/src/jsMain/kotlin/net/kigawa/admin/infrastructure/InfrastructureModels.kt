@@ -60,10 +60,16 @@ data class InfraHostDetails(
     val rootfsUsedBytes: Long? = null
 )
 
+/** nodes/{node}/status 由来のハードウェア情報のみ(issue #158の細粒度取得用)。 */
 @Serializable
-data class InfrastructureDetails(
-    val hostDetails: Map<String, InfraHostDetails> = emptyMap(),
-    val standaloneNodes: List<ServerStatus> = emptyList()
+data class InfraHostHwStatus(
+    val cpuModel: String? = null,
+    val cpuSockets: Int? = null,
+    val cpuPhysicalCores: Int? = null,
+    val kernelVersion: String? = null,
+    val pveVersion: String? = null,
+    val rootfsTotalBytes: Long? = null,
+    val rootfsUsedBytes: Long? = null
 )
 
 /** リソース使用量グラフの1サンプル(issue #132)。 */
