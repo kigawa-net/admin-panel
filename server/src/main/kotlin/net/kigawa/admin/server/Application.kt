@@ -741,6 +741,29 @@ fun Application.module() {
             call.respond(fetchHostSlotInventory(hostName))
         }
 
+        // k8sノードのデバイス空きスロット調査(Proxmoxホスト向けのフォローアップ)。
+        // ノードIPはKubernetes APIのInternalIPで解決し、認証情報はNODE_SSH_*を使う。
+        // KVMゲスト等の仮想ノードは物理スロットの概念がないためvirtualized=trueで返し、
+        // フロント側で表示を抑止する。ionosゲートウェイ(クラウドVPS)は対象外。
+        // 未設定の間は503を返すのみで、他機能には影響しない。
+        get("/api/infrastructure/nodes/{node}/slots") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            if (!isNodeSshConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Node SSH not configured"))
+                return@get
+            }
+            val nodeName = call.parameters["node"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@get
+            }
+            call.respond(fetchNodeSlotInventory(nodeName))
+        }
+
         // インフラのリソース利用量の時系列(物理ホスト=Proxmox rrddata / K8sノード=Prometheus
         // cAdvisor)。グラフ表示用(issue #132)。rangeMinutes は15〜1440(既定60)で、グラフの
         // 描画点を抑えるためトラフィック時系列と同じく最大120点程度に丸める。

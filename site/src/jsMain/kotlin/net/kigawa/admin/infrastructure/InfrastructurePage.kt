@@ -35,6 +35,7 @@ import net.kigawa.admin.servers.PendingOperationState
 import net.kigawa.admin.servers.ServerCard
 import net.kigawa.admin.servers.ServerCardActions
 import net.kigawa.admin.servers.ServerStatus
+import net.kigawa.admin.servers.SlotInventorySection
 import net.kigawa.admin.servers.cordonNode
 import net.kigawa.admin.servers.deletePod
 import net.kigawa.admin.servers.drainNode
@@ -65,6 +66,8 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     var hostPci by remember { mutableStateOf<Map<String, List<InfraPciDevice>>>(emptyMap()) }
     var hostHw by remember { mutableStateOf<Map<String, InfraHostHwStatus>>(emptyMap()) }
     var hostSlots by remember { mutableStateOf<Map<String, HostSlotInventory>>(emptyMap()) }
+    // 表示中k8sノードごとのスロット情報(VM系ノードはvirtualized=trueで返り、非表示になる)
+    var nodeSlots by remember { mutableStateOf<Map<String, HostSlotInventory>>(emptyMap()) }
     var completedSections by remember { mutableStateOf<Set<String>>(emptySet()) }
     var servers by remember { mutableStateOf<List<ServerStatus>?>(null) }
     var refreshKey by remember { mutableStateOf(0) }
@@ -141,6 +144,7 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
         hostPci = emptyMap()
         hostHw = emptyMap()
         hostSlots = emptyMap()
+        nodeSlots = emptyMap()
         completedSections = emptySet()
         servers = null
         val topology = try {
@@ -215,6 +219,25 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                 servers = fetchServerStatuses(httpClient, currentAccessToken).servers
             } catch (e: Throwable) {
                 servers = emptyList()
+            }
+        }
+    }
+
+    // 表示中k8sノード(matched + standalone)ごとのスロット情報を並列取得する。
+    // VM系ノードはvirtualized=trueで返り、ServerCard側で非表示になる。
+    // 失敗時は空のまま(既存のグレースフルデグラデーション方針)。
+    val displayedNodeNames =
+        ((standaloneNodes?.map { it.name }.orEmpty() +
+            hostVms.values.flatten().mapNotNull { it.matchedNode?.name }).toSet())
+    LaunchedEffect(refreshKey, displayedNodeNames) {
+        if (displayedNodeNames.isEmpty()) return@LaunchedEffect
+        displayedNodeNames.forEach { nodeName ->
+            launch {
+                try {
+                    nodeSlots = nodeSlots + (nodeName to fetchNodeSlots(httpClient, currentAccessToken, nodeName))
+                } catch (e: Throwable) {
+                    // 503(NODE_SSH未設定)等もここに来る。表示だけ出さない。
+                }
             }
         }
     }
@@ -386,6 +409,7 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                             details = mergedDetails(host.name),
                             pendingCategories = pendingCategories(host.name),
                             slots = hostSlots[host.name],
+                            nodeSlots = nodeSlots,
                             pendingOperations = pendingOperations,
                             httpClient = httpClient,
                             accessToken = accessToken,
@@ -409,7 +433,8 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                                 pendingOperation = pendingOperations[node.id]?.operation,
                                 httpClient = httpClient,
                                 accessToken = accessToken,
-                                actions = buildActions(node)
+                                actions = buildActions(node),
+                                slots = nodeSlots[node.name]
                             )
                         }
                     }
@@ -426,6 +451,8 @@ private fun HostCard(
     /** 未完了のカテゴリ集合("vms"/"disks"/"pci"/"hw"/"slots")。区分ごとの読み込み中表示に使う。 */
     pendingCategories: Set<String>,
     slots: HostSlotInventory?,
+    /** 表示中k8sノードごとのスロット情報。VM紐付けノードのカード表示に使う。 */
+    nodeSlots: Map<String, HostSlotInventory> = emptyMap(),
     pendingOperations: Map<String, PendingOperationState>,
     httpClient: HttpClient,
     accessToken: String,
@@ -554,46 +581,12 @@ private fun HostCard(
                             pendingOperation = vm.matchedNode?.let { pendingOperations[it.id]?.operation },
                             httpClient = httpClient,
                             accessToken = accessToken,
-                            buildActions = buildActions
+                            buildActions = buildActions,
+                            slots = vm.matchedNode?.let { nodeSlots[it.name] }
                         )
                     }
                 }
             }
-        }
-    }
-}
-
-/** 空きスロット調査結果の表示(admin-panel#156)。SSH未到達時は注意書きのみ出す。 */
-@Composable
-private fun SlotInventorySection(slots: HostSlotInventory) {
-    Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
-        SpanText("空きスロット", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
-        if (!slots.sshReachable) {
-            SpanText(
-                "スロット情報を取得できませんでした(SSH未設定またはホスト到達不可)",
-                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-            )
-            return@Column
-        }
-        val pciFree = slots.pciSlots.count { it.free }
-        val memFree = slots.memorySlots.count { it.free }
-        SpanText(
-            "PCIe空き: $pciFree/${slots.pciSlots.size} ・ メモリ空き: $memFree/${slots.memorySlots.size}" +
-                (slots.diskBays.freeBays?.let { " ・ ディスクベイ空き: $it/${slots.diskBays.totalBays}" }
-                    ?: " ・ ディスク搭載: ${slots.diskBays.populated.size}台(総ベイ数未設定)"),
-            modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-        )
-        slots.pciSlots.filter { it.free }.forEach { slot ->
-            SpanText(
-                "空き: ${slot.designation}${slot.type?.let { " ($it)" } ?: ""}",
-                modifier = Modifier.color(Color("#008300")).fontSize(FontSize.Small)
-            )
-        }
-        slots.memorySlots.filter { it.free }.forEach { slot ->
-            SpanText(
-                "空き: ${slot.locator} (メモリ)",
-                modifier = Modifier.color(Color("#008300")).fontSize(FontSize.Small)
-            )
         }
     }
 }
@@ -604,7 +597,8 @@ private fun VmSection(
     pendingOperation: PendingOperation?,
     httpClient: HttpClient,
     accessToken: String,
-    buildActions: (ServerStatus) -> ServerCardActions
+    buildActions: (ServerStatus) -> ServerCardActions,
+    slots: HostSlotInventory? = null
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.px)) {
         Row(
@@ -628,7 +622,8 @@ private fun VmSection(
                 pendingOperation = pendingOperation,
                 httpClient = httpClient,
                 accessToken = accessToken,
-                actions = buildActions(node)
+                actions = buildActions(node),
+                slots = slots
             )
         }
     }

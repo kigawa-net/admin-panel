@@ -112,7 +112,10 @@ data class HostSlotInventory(
     val sshReachable: Boolean = true,
     val pciSlots: List<PciSlotInfo> = emptyList(),
     val memorySlots: List<MemorySlotInfo> = emptyList(),
-    val diskBays: DiskBayInfo = DiskBayInfo()
+    val diskBays: DiskBayInfo = DiskBayInfo(),
+    /** 仮想マシン上と判定された場合は真。物理スロットの概念がないため表示を抑止する。 */
+    val virtualized: Boolean = false,
+    val systemProduct: String? = null
 )
 
 /** リソース使用量グラフの1サンプル(issue #132)。 */

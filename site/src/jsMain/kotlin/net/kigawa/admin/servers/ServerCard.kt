@@ -19,6 +19,7 @@ import com.varabyte.kobweb.silk.components.forms.Button
 import com.varabyte.kobweb.silk.components.text.SpanText
 import io.ktor.client.HttpClient
 import kotlinx.browser.window
+import net.kigawa.admin.infrastructure.HostSlotInventory
 import org.jetbrains.compose.web.css.Color
 import org.jetbrains.compose.web.css.px
 import org.jetbrains.compose.web.css.rgba
@@ -75,7 +76,9 @@ internal fun ServerCard(
     pendingOperation: PendingOperation?,
     httpClient: HttpClient,
     accessToken: String,
-    actions: ServerCardActions
+    actions: ServerCardActions,
+    /** k8sノードのスロット情報。成立時のみ表示し、未取得・VM系では何も出さない。 */
+    slots: HostSlotInventory? = null
 ) {
     var showPods by remember { mutableStateOf(false) }
     var pods by remember { mutableStateOf<List<PodSummary>?>(null) }
@@ -155,6 +158,11 @@ internal fun ServerCard(
             if (server.schedulable) "スケジューリング: 有効" else "スケジューリング: 停止中",
             modifier = Modifier.color(if (server.schedulable) Colors.Gray else Color("#E34948")).fontSize(FontSize.Small)
         )
+        // 物理ノードのスロット情報がある場合のみ表示する。VM系ノード・未取得時は
+        // 何も出さず、読み込み中表示も出さない。
+        if (slots != null && shouldShowNodeSlots(slots)) {
+            SlotInventorySection(slots = slots)
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 8.px),

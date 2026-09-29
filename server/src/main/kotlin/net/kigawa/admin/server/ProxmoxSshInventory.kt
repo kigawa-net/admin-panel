@@ -4,11 +4,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider
@@ -121,7 +120,11 @@ data class HostSlotInventoryDto(
     val sshReachable: Boolean = true,
     val pciSlots: List<PciSlotInfo> = emptyList(),
     val memorySlots: List<MemorySlotInfo> = emptyList(),
-    val diskBays: DiskBayInfo = DiskBayInfo()
+    val diskBays: DiskBayInfo = DiskBayInfo(),
+    /** 仮想マシン上と判定されたかどうか。真の場合は物理スロットの概念がない。 */
+    val virtualized: Boolean = false,
+    /** dmidecode -s system-product-name の原文(取得失敗時はnull)。 */
+    val systemProduct: String? = null
 )
 
 /** dmidecode -t slot の1レコードからPCIスロット情報を取り出す。 */
@@ -190,6 +193,9 @@ internal fun parseDmidecodeMemory(output: String): List<MemorySlotInfo> {
     return records.mapNotNull { parseDmidecodeMemoryRecord(it) }
 }
 
+/** KVMゲストの仮想ディスク(nbd/rbd/loop/dm-/md等)の名前接頭辞。物理ディスク意味論のため除外する。 */
+private val virtualDiskPrefixes = listOf("nbd", "rbd", "loop", "dm-", "md")
+
 /** lsblk --json 出力から物理ディスク一覧を取り出す。 */
 internal fun parseLsblkJson(output: String): List<DiskBayDisk> {
     return try {
@@ -197,18 +203,43 @@ internal fun parseLsblkJson(output: String): List<DiskBayDisk> {
         val devices = root["blockdevices"]?.jsonArray.orEmpty()
         devices.mapNotNull { element ->
             val obj = element.jsonObject
-            if (obj["type"]?.jsonPrimitive?.content != "disk") return@mapNotNull null
+            // JsonNullに対するjsonPrimitiveは例外になるため、欠損・nullは先に弾く
+            val typeElement = obj["type"]
+            if (typeElement == null || typeElement is JsonNull || typeElement.jsonPrimitive.content != "disk") {
+                return@mapNotNull null
+            }
+            val nameElement = obj["name"]
+            val name = if (nameElement == null || nameElement is JsonNull) {
+                return@mapNotNull null
+            } else {
+                nameElement.jsonPrimitive.content
+            }
+            // 仮想デバイスは物理ディスクの意味論を持たないため除外する
+            if (virtualDiskPrefixes.any { name.startsWith(it) }) return@mapNotNull null
+            val sizeElement = obj["size"]
+            val sizeBytes = if (sizeElement == null || sizeElement is JsonNull) {
+                null
+            } else {
+                try {
+                    sizeElement.jsonPrimitive.content.toLongOrNull()
+                } catch (e: IllegalArgumentException) {
+                    // 数値でないsize表記の場合はnull
+                    null
+                }
+            }
+            val modelElement = obj["model"]
             DiskBayDisk(
-                name = obj["name"]?.jsonPrimitive?.content ?: return@mapNotNull null,
-                sizeBytes = obj["size"]?.let {
+                name = name,
+                sizeBytes = sizeBytes,
+                model = if (modelElement == null || modelElement is JsonNull) {
+                    null
+                } else {
                     try {
-                        it.jsonPrimitive.content.toLongOrNull()
+                        modelElement.jsonPrimitive.content.trim().takeIf { it.isNotEmpty() }
                     } catch (e: IllegalArgumentException) {
-                        // 数値でないsize表記の場合はnull
                         null
                     }
-                },
-                model = obj["model"]?.jsonPrimitive?.content?.trim()?.takeIf { it.isNotEmpty() }
+                }
             )
         }
     } catch (e: Exception) {
@@ -217,17 +248,41 @@ internal fun parseLsblkJson(output: String): List<DiskBayDisk> {
     }
 }
 
-private suspend fun <T> withProxmoxSsh(hostIp: String, block: suspend (SSHClient) -> T): T =
+/**
+ * dmidecode -s system-product-name の出力から仮想マシン上かどうかを判定する。
+ * 物理スロットの概念がないKVMゲスト等ではフロント側でスロット表示を抑止するために使う。
+ */
+internal fun isVirtualProductName(name: String): Boolean {
+    val lower = name.lowercase()
+    return listOf(
+        "qemu",
+        "kvm",
+        "vmware",
+        "virtualbox",
+        "xen",
+        "virtual machine",
+        "hyper-v",
+        "hyperv",
+        "microsoft corporation",
+        "ec2",
+        "elastic compute",
+        "google compute",
+        "gce",
+        "openstack",
+        "bochs",
+        "bhyve",
+        "parallels"
+    ).any { lower.contains(it) }
+}
+
+private suspend fun <T> withSshKey(hostIp: String, sshUser: String, privateKey: String, block: suspend (SSHClient) -> T): T =
     withContext(Dispatchers.IO) {
-        val key = proxmoxSshPrivateKey
-            ?.takeUnless { it.isBlank() || it.trim() == UNCONFIGURED_SENTINEL }
-            ?: throw IOException("Proxmox SSH private key is not configured")
         SSHClient().use { client ->
             client.addHostKeyVerifier(PromiscuousVerifier())
             client.connectTimeout = SSH_CONNECT_TIMEOUT_MS
             client.connect(hostIp)
-            val keyProvider: KeyProvider = client.loadKeys(key, null, null)
-            client.authPublickey(proxmoxSshUser, keyProvider)
+            val keyProvider: KeyProvider = client.loadKeys(privateKey, null, null)
+            client.authPublickey(sshUser, keyProvider)
             block(client)
         }
     }
@@ -239,7 +294,8 @@ private fun execSshCommand(client: SSHClient, command: String, sudoPassword: Str
         // execの前にPTYを割り当てる(NodeSshOperationsと同様)。
         session.allocatePTY("vt100", 80, 24, 0, 0, emptyMap())
         val fullCommand = if (sudoPassword != null) {
-            "echo '${sudoPassword.replace("'", "'\\''")}' | sudo -S $command"
+            // -p '' でパスワードプロンプトを空にし、stdoutへの混入を防ぐ
+            "echo '${sudoPassword.replace("'", "'\\''")}' | sudo -S -p '' $command"
         } else {
             command
         }
@@ -256,24 +312,33 @@ private fun execSshCommand(client: SSHClient, command: String, sudoPassword: Str
 }
 
 /**
- * 指定Proxmoxホストの空きスロット調査を行う。SSH到達・認証・コマンド失敗時は
+ * SSH接続+4コマンド実行+DTO組み立ての本体。Proxmoxホスト用・k8sノード用の
+ * どちらからも使う共通処理。SSH到達・認証・コマンド失敗時は
  * sshReachable=falseの空結果を返す(呼び出し側は既存のグレースフルデグラデーションで扱う)。
  */
-suspend fun fetchHostSlotInventory(hostName: String): HostSlotInventoryDto {
-    if (!isProxmoxSshConfigured) return HostSlotInventoryDto(sshReachable = false)
-    val hostIp = proxmoxSshHosts[hostName] ?: return HostSlotInventoryDto(sshReachable = false)
-    // root直ログイン時はsudo不要。root以外でsudoパスワード未設定の場合はdmidecodeが
-    // 失敗し、空結果になる(呼び出し側でsshReachable=falseとして扱う)。
-    val sudoPassword = if (proxmoxSshUser == "root") null else usableSudoPassword()
-
+internal suspend fun fetchSlotInventoryViaSsh(
+    label: String,
+    hostIp: String,
+    sshUser: String,
+    privateKey: String,
+    sudoPassword: String?,
+    totalBays: Int?
+): HostSlotInventoryDto {
     return try {
         withTimeoutOrNull(SLOTS_OVERALL_TIMEOUT_MS) {
-            withProxmoxSsh(hostIp) { client ->
+            withSshKey(hostIp, sshUser, privateKey) { client ->
                 val slotsOut = execSshCommand(client, "dmidecode -t slot", sudoPassword)
                 val memOut = execSshCommand(client, "dmidecode -t memory", sudoPassword)
                 val lsblkOut = execSshCommand(client, "lsblk -d -b -o NAME,SIZE,MODEL,TYPE --json", sudoPassword)
+                // 機種名の取得だけ失敗しても全体は継続する(virtualized判定だけ欠ける)
+                val productOut = try {
+                    execSshCommand(client, "dmidecode -s system-product-name", sudoPassword).trim()
+                        .takeIf { it.isNotEmpty() }
+                } catch (e: Exception) {
+                    logger.warn("system-product-name query failed for $label: ${e.message}")
+                    null
+                }
                 val populated = parseLsblkJson(lsblkOut)
-                val totalBays = proxmoxDiskBays[hostName]
                 HostSlotInventoryDto(
                     sshReachable = true,
                     pciSlots = parseDmidecodeSlots(slotsOut),
@@ -282,12 +347,71 @@ suspend fun fetchHostSlotInventory(hostName: String): HostSlotInventoryDto {
                         totalBays = totalBays,
                         populated = populated,
                         freeBays = totalBays?.let { (it - populated.size).coerceAtLeast(0) }
-                    )
+                    ),
+                    virtualized = productOut?.let { isVirtualProductName(it) } == true,
+                    systemProduct = productOut
                 )
             }
         } ?: HostSlotInventoryDto(sshReachable = false)
     } catch (e: Exception) {
-        logger.warn("Proxmox slot inventory failed for $hostName: ${e::class.qualifiedName}: ${e.message}")
+        logger.warn("Slot inventory failed for $label: ${e::class.qualifiedName}: ${e.message}")
         HostSlotInventoryDto(sshReachable = false)
     }
+}
+
+/**
+ * 指定Proxmoxホストの空きスロット調査を行う。SSH到達・認証・コマンド失敗時は
+ * sshReachable=falseの空結果を返す(呼び出し側は既存のグレースフルデグラデーションで扱う)。
+ */
+suspend fun fetchHostSlotInventory(hostName: String): HostSlotInventoryDto {
+    if (!isProxmoxSshConfigured) return HostSlotInventoryDto(sshReachable = false)
+    val hostIp = proxmoxSshHosts[hostName] ?: return HostSlotInventoryDto(sshReachable = false)
+    val key = proxmoxSshPrivateKey
+        ?.takeUnless { it.isBlank() || it.trim() == UNCONFIGURED_SENTINEL }
+        ?: return HostSlotInventoryDto(sshReachable = false)
+    // root直ログイン時はsudo不要。root以外でsudoパスワード未設定の場合はdmidecodeが
+    // 失敗し、空結果になる(呼び出し側でsshReachable=falseとして扱う)。
+    val sudoPassword = if (proxmoxSshUser == "root") null else usableSudoPassword()
+    return fetchSlotInventoryViaSsh(
+        label = hostName,
+        hostIp = hostIp,
+        sshUser = proxmoxSshUser,
+        privateKey = key,
+        sudoPassword = sudoPassword,
+        totalBays = proxmoxDiskBays[hostName]
+    )
+}
+
+/** k8sノード用SSH認証情報(NODE_SSH_PRIVATE_KEY)の設定有無。未設定の間はノード向け機能全体が無効。 */
+val isNodeSshConfigured: Boolean
+    get() {
+        val key = System.getenv("NODE_SSH_PRIVATE_KEY")
+        return !key.isNullOrBlank() && key.trim() != UNCONFIGURED_SENTINEL
+    }
+
+private fun usableNodeSudoPassword(): String? {
+    val password = System.getenv("NODE_SSH_SUDO_PASSWORD")
+    return if (password.isNullOrBlank() || password.trim() == UNCONFIGURED_SENTINEL) null else password
+}
+
+/**
+ * 指定k8sノードの空きスロット調査を行う。ノードIPはKubernetes APIのInternalIPで
+ * 解決し、認証情報はNODE_SSH_*を使う。総ドライブベイ数は機種定義がないためnull。
+ * IP不明・未設定時はsshReachable=falseを返す。
+ */
+suspend fun fetchNodeSlotInventory(nodeName: String): HostSlotInventoryDto {
+    if (!isNodeSshConfigured) return HostSlotInventoryDto(sshReachable = false)
+    val hostIp = getNodeInternalIp(nodeName) ?: return HostSlotInventoryDto(sshReachable = false)
+    val key = System.getenv("NODE_SSH_PRIVATE_KEY")
+        ?.takeUnless { it.isBlank() || it.trim() == UNCONFIGURED_SENTINEL }
+        ?: return HostSlotInventoryDto(sshReachable = false)
+    val sshUser = System.getenv("NODE_SSH_USER")?.takeIf { it.isNotBlank() } ?: "kigawa"
+    return fetchSlotInventoryViaSsh(
+        label = nodeName,
+        hostIp = hostIp,
+        sshUser = sshUser,
+        privateKey = key,
+        sudoPassword = usableNodeSudoPassword(),
+        totalBays = null
+    )
 }

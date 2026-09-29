@@ -47,6 +47,13 @@ suspend fun fetchHostSlots(client: HttpClient, accessToken: String, hostName: St
     }.body()
 }
 
+/** k8sノードの空きスロット調査結果を取得する。VM系ノードはvirtualized=trueで返る。 */
+suspend fun fetchNodeSlots(client: HttpClient, accessToken: String, nodeName: String): HostSlotInventory {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/nodes/$nodeName/slots") {
+        bearerAuth(accessToken)
+    }.body()
+}
+
 /** リソース使用量グラフ用の時系列を取得する(issue #132)。 */
 suspend fun fetchResourceUsage(client: HttpClient, accessToken: String, rangeMinutes: Int): ResourceUsageResponse {
     return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/resource-usage?rangeMinutes=$rangeMinutes") {

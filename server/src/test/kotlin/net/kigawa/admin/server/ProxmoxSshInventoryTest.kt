@@ -130,4 +130,52 @@ Memory Device
     fun `returns empty on broken lsblk output`() {
         assertTrue(parseLsblkJson("not json").isEmpty())
     }
+
+    @Test
+    fun `keeps disk with null model instead of dropping all`() {
+        // "model": null の1件があるとjsonPrimitiveが例外になり、外側catchで
+        // 全件消失していた回帰ケース。null-modelの1件だけmodel=nullで保持する。
+        val json = """
+{"blockdevices": [
+   {"name":"sda", "size":1000204886016, "model":null, "type":"disk"},
+   {"name":"sdb", "size":500107862016, "model":"WDC WD5000", "type":"disk"}
+]}""".trimIndent()
+        val disks = parseLsblkJson(json)
+        assertEquals(2, disks.size)
+        assertEquals("sda", disks[0].name)
+        assertNull(disks[0].model)
+        assertEquals(1000204886016L, disks[0].sizeBytes)
+        assertEquals("WDC WD5000", disks[1].model)
+    }
+
+    @Test
+    fun `excludes virtual disks`() {
+        // nbd/rbd/loop/dm-/mdは物理ディスクの意味論を持たないため除外する
+        val json = """
+{"blockdevices": [
+   {"name":"sda", "size":1000204886016, "model":"Samsung SSD 870", "type":"disk"},
+   {"name":"nbd0", "size":10737418240, "model":null, "type":"disk"},
+   {"name":"rbd0", "size":10737418240, "model":null, "type":"disk"},
+   {"name":"loop0", "size":1048576, "model":null, "type":"disk"},
+   {"name":"dm-0", "size":10737418240, "model":null, "type":"disk"},
+   {"name":"md0", "size":2000406220800, "model":null, "type":"disk"}
+]}""".trimIndent()
+        val disks = parseLsblkJson(json)
+        assertEquals(1, disks.size)
+        assertEquals("sda", disks[0].name)
+    }
+
+    @Test
+    fun `detects virtualized product names`() {
+        assertTrue(isVirtualProductName("KVM"))
+        assertTrue(isVirtualProductName("Standard PC (QEMU + KVM)"))
+        assertTrue(isVirtualProductName("VMware Virtual Platform"))
+        assertTrue(isVirtualProductName("VirtualBox"))
+        assertTrue(isVirtualProductName("Virtual Machine"))
+        assertTrue(isVirtualProductName("Microsoft Corporation"))
+        assertTrue(isVirtualProductName("Amazon EC2"))
+        assertTrue(isVirtualProductName("Google Compute Engine"))
+        assertFalse(isVirtualProductName("PowerEdge R6515"))
+        assertFalse(isVirtualProductName("ProLiant DL360 Gen10"))
+    }
 }
