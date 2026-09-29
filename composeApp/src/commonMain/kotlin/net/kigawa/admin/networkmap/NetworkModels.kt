@@ -62,6 +62,16 @@ fun fallbackNetworkTopology(): NetworkTopology {
         x = 0.5f,
         y = 0.38f
     )
+    // ionosゲートウェイ (IONOS回線側のゲートウェイ、aliceとは別経路。issue #159)
+    val ionos = NetworkDevice(
+        id = "ionos",
+        name = "ionosゲートウェイ",
+        type = DeviceType.GATEWAY,
+        ipAddress = "-",
+        purpose = "IONOS回線側ゲートウェイ (WireGuard/FRR/HAProxy)",
+        x = 0.5f,
+        y = 0.25f
+    )
     val server = NetworkDevice(
         id = "server",
         name = "サーバー",
@@ -82,10 +92,12 @@ fun fallbackNetworkTopology(): NetworkTopology {
     )
 
     return NetworkTopology(
-        devices = listOf(internet, router, server, pc),
+        devices = listOf(internet, router, ionos, server, pc),
         connections = listOf(
             NetworkConnection(internet.id, router.id),
+            NetworkConnection(internet.id, ionos.id),
             NetworkConnection(router.id, server.id),
+            NetworkConnection(ionos.id, server.id),
             NetworkConnection(server.id, pc.id)
         )
     )

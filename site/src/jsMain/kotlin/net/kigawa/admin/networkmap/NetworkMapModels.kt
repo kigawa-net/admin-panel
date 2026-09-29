@@ -41,13 +41,17 @@ data class NetworkTopology(
 fun fallbackNetworkTopology(): NetworkTopology {
     val internet = NetworkDevice("internet", "インターネット", DeviceType.INTERNET, "-", "外部ネットワークへの接続", 0.5f, 0.12f)
     val router = NetworkDevice("router", "ルーター", DeviceType.ROUTER, "-", "各機器の通信を中継", 0.5f, 0.38f)
+    // ionosゲートウェイ (IONOS回線側のゲートウェイ、aliceとは別経路)
+    val ionos = NetworkDevice("ionos", "ionosゲートウェイ", DeviceType.GATEWAY, "-", "IONOS回線側ゲートウェイ (WireGuard/FRR/HAProxy)", 0.5f, 0.25f)
     val server = NetworkDevice("server", "サーバー", DeviceType.CONTROL_PLANE, "-", "各種サービスの実行・管理", 0.5f, 0.64f)
     val pc = NetworkDevice("pc", "パソコン", DeviceType.PC, "-", "開発・管理作業用の端末", 0.5f, 0.90f)
     return NetworkTopology(
-        devices = listOf(internet, router, server, pc),
+        devices = listOf(internet, router, ionos, server, pc),
         connections = listOf(
             NetworkConnection(internet.id, router.id),
+            NetworkConnection(internet.id, ionos.id),
             NetworkConnection(router.id, server.id),
+            NetworkConnection(ionos.id, server.id),
             NetworkConnection(server.id, pc.id)
         )
     )

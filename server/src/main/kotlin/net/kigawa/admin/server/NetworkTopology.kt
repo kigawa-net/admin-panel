@@ -71,7 +71,14 @@ internal data class PrometheusInstantResult(
 suspend fun loadNetworkTopology(client: HttpClient, allowedOrgIds: Set<String>? = null): NetworkTopologyDto {
     val discoveredDevices = discoverKubernetesNodes(allowedOrgIds)
     val fallback = genericNetworkTopology()
-    val devices = discoveredDevices.ifEmpty { fallback.devices }
+    // 実ノードが検出できた場合も、K8s APIでは取得できない外部ゲートウェイ(ionos)は
+    // 常時追加する(issue #159)。conntrackのIPマッチ対象外(ipAddress="-")のため、
+    // 既存の接続線ロジックには影響しない。
+    val devices = if (discoveredDevices.isEmpty()) {
+        fallback.devices
+    } else {
+        discoveredDevices + ionosGatewayDevice()
+    }
 
     val liveConnections = queryConntrackConnections(client, devices)
     val connections = liveConnections.ifEmpty {
@@ -80,6 +87,14 @@ suspend fun loadNetworkTopology(client: HttpClient, allowedOrgIds: Set<String>? 
 
     return NetworkTopologyDto(devices = devices, connections = connections)
 }
+
+/**
+ * IONOS回線側ゲートウェイの静的デバイス定義(issue #159)。
+ * K8sノードではない外部機器のためKubernetes APIでは検出できず、ここで常時追加する。
+ * 実IP等のセンシティブ情報は含めない。
+ */
+private fun ionosGatewayDevice(): NetworkDeviceDto =
+    NetworkDeviceDto("ionos", "ionosゲートウェイ", "GATEWAY", "-", "IONOS回線側ゲートウェイ (WireGuard/FRR/HAProxy)", 0.5f, 0.12f)
 
 private suspend fun queryConntrackConnections(
     client: HttpClient,
@@ -119,13 +134,17 @@ private suspend fun queryConntrackConnections(
 private fun genericNetworkTopology(): NetworkTopologyDto {
     val internet = NetworkDeviceDto("internet", "インターネット", "INTERNET", "-", "外部ネットワークへの接続", 0.5f, 0.12f)
     val router = NetworkDeviceDto("router", "ルーター", "ROUTER", "-", "各機器の通信を中継", 0.5f, 0.38f)
+    // ionosゲートウェイ (IONOS回線側のゲートウェイ、aliceとは別経路)
+    val ionos = NetworkDeviceDto("ionos", "ionosゲートウェイ", "GATEWAY", "-", "IONOS回線側ゲートウェイ (WireGuard/FRR/HAProxy)", 0.5f, 0.25f)
     val server = NetworkDeviceDto("server", "サーバー", "CONTROL_PLANE", "-", "各種サービスの実行・管理", 0.5f, 0.64f)
     val pc = NetworkDeviceDto("pc", "パソコン", "PC", "-", "開発・管理作業用の端末", 0.5f, 0.90f)
     return NetworkTopologyDto(
-        devices = listOf(internet, router, server, pc),
+        devices = listOf(internet, router, ionos, server, pc),
         connections = listOf(
             NetworkConnectionDto(internet.id, router.id),
+            NetworkConnectionDto(internet.id, ionos.id),
             NetworkConnectionDto(router.id, server.id),
+            NetworkConnectionDto(ionos.id, server.id),
             NetworkConnectionDto(server.id, pc.id)
         )
     )
