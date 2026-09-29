@@ -34,3 +34,12 @@ data class GithubInstallationTokenResponse(
     val permissions: Map<String, String> = emptyMap(),
     val repositories: List<GithubRepository>? = null
 )
+
+/** CI向けトークン発行ブローカー(/api/github-app/ci-token)の呼び出し元リポジトリ別許可設定(issue #64)。 */
+@Serializable
+data class CiTokenPolicyEntry(
+    val callerRepository: String,
+    val allowedOwner: String,
+    val allowedRepositories: List<String>,
+    val allowedPermissions: Map<String, String>
+)

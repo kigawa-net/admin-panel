@@ -1,0 +1,18 @@
+apiVersion: k8s.bitwarden.com/v1
+kind: BitwardenSecret
+metadata:
+  name: admin-panel-mariadb-bws
+spec:
+  organizationId: "a2b57f3d-6e2b-4467-b499-b31e00bfd804"
+  secretName: admin-panel-mariadb
+  authToken:
+    secretName: bitwarden-sec
+    secretKey: token
+  map:
+    # TODO(admin-panel#64): kigawa-net/infra#137がmerge・terraform apply済みになったら、
+    # `terraform output`のmariadb_root_password_bws_id/mariadb_app_password_bws_idの
+    # 実際の値に差し替える。
+    - bwSecretId: "REPLACE_ME_mariadb_root_password_bws_id"
+      secretKeyName: root-password
+    - bwSecretId: "REPLACE_ME_mariadb_app_password_bws_id"
+      secretKeyName: app-password
