@@ -202,7 +202,9 @@ data class ResourceUsagePointDto(
 @Serializable
 data class PhysicalHostUsageDto(
     @SerialName("cpuPercent") val cpuPercent: List<ResourceUsagePointDto> = emptyList(),
-    @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList()
+    @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList(),
+    @SerialName("maxCpuCores") val maxCpuCores: Int? = null,
+    @SerialName("maxMemGiB") val maxMemGiB: Double? = null
 )
 
 /** nodes/{node}/rrddata の1サンプル。CPUは0..1の割合、memused/memtotalはバイト。 */
@@ -415,7 +417,7 @@ suspend fun fetchPhysicalHostUsage(rangeMinutes: Int): Map<String, PhysicalHostU
 
         val results = coroutineScope {
             nodes.filter { it.status == "online" }.map { node ->
-                async { node.node to fetchHostRrd(client, auth, node.node, timeframe, start, end) }
+                async { node.node to fetchHostRrd(client, auth, node.node, timeframe, start, end, node.maxcpu, node.maxmem) }
             }.awaitAll()
         }
         return results.mapNotNull { (name, dto) -> dto?.let { name to it } }.toMap()
@@ -430,7 +432,9 @@ private suspend fun fetchHostRrd(
     nodeName: String,
     timeframe: String,
     start: Long,
-    end: Long
+    end: Long,
+    maxCpuCores: Int?,
+    maxMemBytes: Long?
 ): PhysicalHostUsageDto? = try {
     val rows = withTimeoutRetry("Proxmox rrddata fetch for node $nodeName") {
         client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/rrddata?timeframe=$timeframe&cf=AVERAGE") {
@@ -447,7 +451,9 @@ private suspend fun fetchHostRrd(
             val t = row.time ?: return@mapNotNull null
             if (t !in start..end) return@mapNotNull null
             row.memused?.let { ResourceUsagePointDto(t, it / 1073741824.0) }
-        }
+        },
+        maxCpuCores = maxCpuCores,
+        maxMemGiB = maxMemBytes?.let { it / 1073741824.0 }
     )
 } catch (e: Exception) {
     logger.warn("Proxmox rrddata fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}", e)

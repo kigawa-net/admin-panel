@@ -6,6 +6,8 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.http.HttpHeaders
 import io.ktor.http.URLBuilder
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.async
@@ -26,6 +28,11 @@ private val logger = LoggerFactory.getLogger("PrometheusMetrics")
 // kubelet(cAdvisor)がスクレイプしているコンテナ単位のメトリクスをノードごとに集計して代用する。
 
 data class NodeResourceUsage(val cpuUsageCores: Double?, val memoryUsageBytes: Long?)
+
+/**
+ * ノードの容量情報(CPUコア数、メモリバイト数)。
+ */
+data class NodeCapacity(val cpuCores: Int, val memoryBytes: Long)
 
 /**
  * K8sノードごとのグラフ用時系列(issue #132)。cpuCores/memGiBはそれぞれ
@@ -78,13 +85,13 @@ suspend fun fetchNodeResourceUsage(): Map<String, NodeResourceUsage> {
     val client = buildPrometheusHttpClient()
     try {
         val (cpuByNode, memByNode) = coroutineScope {
-            val cpuDeferred = async {
+            val cpuDeferred = async<Map<String, Double>> {
                 queryPrometheusVector(
                     client,
                     "sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\",container!=\"POD\"}[5m]))"
                 )
             }
-            val memDeferred = async {
+            val memDeferred = async<Map<String, Double>> {
                 queryPrometheusVector(
                     client,
                     "sum by (node) (container_memory_working_set_bytes{container!=\"\",container!=\"POD\"})"
@@ -109,8 +116,9 @@ suspend fun fetchNodeResourceUsage(): Map<String, NodeResourceUsage> {
  * ノードごとのCPU/メモリ使用量の時系列をquery_rangeで取得する(issue #132)。
  * グラフ表示はPrometheus自体の障害時に失敗させないため、片方のクエリが失敗した場合は
  * そのシリーズのみ空にする。
+ * また、Kubernetes APIからノードの容量情報(CPU/メモリ容量)も取得して含める(issue #157)。
  */
-suspend fun fetchNodeResourceUsageSeries(rangeMinutes: Int): Map<String, NodeResourceUsageSeries> {
+suspend fun fetchNodeResourceUsageSeries(rangeMinutes: Int): Map<String, K8sNodeUsageDto> {
     val client = buildPrometheusHttpClient()
     try {
         val endSeconds = System.currentTimeMillis() / 1000
@@ -118,7 +126,7 @@ suspend fun fetchNodeResourceUsageSeries(rangeMinutes: Int): Map<String, NodeRes
         // トラフィック時系列と同じく、最大120点程度に抑える(クライアント側の描画を軽く保つ)。
         val step = (rangeMinutes * 60 / 120).coerceAtLeast(15)
 
-        val (cpuByNode, memByNode) = coroutineScope {
+        return coroutineScope {
             val cpuDeferred = async {
                 queryRangeNodeMap(
                     client,
@@ -133,22 +141,90 @@ suspend fun fetchNodeResourceUsageSeries(rangeMinutes: Int): Map<String, NodeRes
                     startSeconds, endSeconds, step
                 )
             }
-            cpuDeferred.await() to memDeferred.await()
-        }
+            val capacityDeferred = async {
+                fetchNodeCapacityFromK8s()
+            }
+            val cpuByNode = cpuDeferred.await()
+            val memByNode = memDeferred.await()
+            val capacityByNode = capacityDeferred.await()
 
-        val nodeNames = cpuByNode.keys + memByNode.keys
-        return nodeNames.associateWith { node ->
-            NodeResourceUsageSeries(
-                cpuCores = cpuByNode[node].orEmpty(),
-                memGiB = memByNode[node].orEmpty().map { (t, v) -> t to v / 1073741824.0 }
-            )
+            val nodeNames = cpuByNode.keys + memByNode.keys + capacityByNode.keys
+            nodeNames.associateWith { node: String ->
+                val cpuPoints = cpuByNode[node].orEmpty()
+                val memPoints = memByNode[node].orEmpty().map { (t, v) -> t to v / 1073741824.0 }
+                val capacity = capacityByNode[node]
+                K8sNodeUsageDto(
+                    cpuCores = cpuPoints.map { (t, v) -> ResourceUsagePointDto(t, v) },
+                    memGiB = memPoints.map { (t, v) -> ResourceUsagePointDto(t, v) },
+                    cpuCapacityCores = capacity?.cpuCores,
+                    memCapacityGiB = capacity?.memoryBytes?.let { it / 1073741824.0 }
+                )
+            }
         }
     } finally {
         client.close()
     }
 }
 
-/** 複数シリーズ対応のquery_range。返り値はメトリクスラベル(ここではnode)ごとの時系列。 */
+/**
+ * K8sノードごとのグラフ用時系列(issue #132)。cpuCores/memGiBはそれぞれ
+ * (UNIX秒タイムスタンプ, 値)の昇順リスト。
+ */
+
+private suspend fun queryPrometheusVector(client: HttpClient, query: String): Map<String, Double> {
+    val url = URLBuilder("$prometheusUrl/api/v1/query").apply {
+        parameters.append("query", query)
+    }.buildString()
+
+    return try {
+        val response = client.get(url).body<PrometheusInstantQueryResponse>()
+        if (response.status != "success") {
+            logger.warn("Prometheus query returned non-success status: $query")
+            return emptyMap()
+        }
+        response.data?.result.orEmpty().mapNotNull { result ->
+            val node = result.metric["node"] ?: return@mapNotNull null
+            val value = result.value.getOrNull(1)?.jsonPrimitive?.content?.toDoubleOrNull() ?: return@mapNotNull null
+            node to value
+        }.toMap()
+    } catch (e: Exception) {
+        logger.warn("Prometheus query failed: ${e::class.qualifiedName}: ${e.message}")
+        emptyMap()
+    }
+}
+
+/**
+ * K8sノードの容量情報(CPUコア数、メモリバイト数)をKubernetes APIから取得する(issue #157)。
+ */
+suspend fun fetchNodeCapacityFromK8s(): Map<String, NodeCapacity> {
+    val apiServerUrl = inClusterApiServerUrl() ?: return emptyMap()
+    val token = readServiceAccountToken() ?: return emptyMap()
+    val client = buildKubernetesHttpClient() ?: return emptyMap()
+
+    return try {
+        val nodeList = client.get("$apiServerUrl/api/v1/nodes") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+        }.body<K8sNodeList>()
+
+        nodeList.items.mapNotNull { node ->
+            val cpuStr = node.status.capacity["cpu"]
+            val memStr = node.status.capacity["memory"]
+            if (cpuStr == null || memStr == null) return@mapNotNull null
+            val cpuCores = cpuStr.removeSuffix("m").toIntOrNull() ?: return@mapNotNull null
+            val memKi = memStr.removeSuffix("Ki").toLongOrNull() ?: return@mapNotNull null
+            node.metadata.name to NodeCapacity(cpuCores, memKi * 1024)
+        }.toMap()
+    } catch (e: Exception) {
+        logger.warn("Failed to fetch node capacity from K8s: ${e::class.qualifiedName}: ${e.message}")
+        emptyMap()
+    } finally {
+        client.close()
+    }
+}
+
+/**
+ * 複数シリーズ対応のquery_range。返り値はメトリクスラベル(ここではnode)ごとの時系列。
+ */
 private suspend fun queryRangeNodeMap(
     client: HttpClient,
     query: String,
@@ -181,28 +257,6 @@ private suspend fun queryRangeNodeMap(
         }.toMap()
     } catch (e: Exception) {
         logger.warn("Prometheus query_range failed: ${e::class.qualifiedName}: ${e.message}")
-        emptyMap()
-    }
-}
-
-private suspend fun queryPrometheusVector(client: HttpClient, query: String): Map<String, Double> {
-    val url = URLBuilder("$prometheusUrl/api/v1/query").apply {
-        parameters.append("query", query)
-    }.buildString()
-
-    return try {
-        val response = client.get(url).body<PrometheusInstantQueryResponse>()
-        if (response.status != "success") {
-            logger.warn("Prometheus query returned non-success status: $query")
-            return emptyMap()
-        }
-        response.data?.result.orEmpty().mapNotNull { result ->
-            val node = result.metric["node"] ?: return@mapNotNull null
-            val value = result.value.getOrNull(1)?.jsonPrimitive?.content?.toDoubleOrNull() ?: return@mapNotNull null
-            node to value
-        }.toMap()
-    } catch (e: Exception) {
-        logger.warn("Prometheus query failed: ${e::class.qualifiedName}: ${e.message}")
         emptyMap()
     }
 }

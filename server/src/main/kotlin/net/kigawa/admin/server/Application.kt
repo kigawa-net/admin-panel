@@ -94,7 +94,9 @@ data class InfrastructureResourceUsageResponse(
 @Serializable
 data class K8sNodeUsageDto(
     @SerialName("cpuCores") val cpuCores: List<ResourceUsagePointDto> = emptyList(),
-    @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList()
+    @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList(),
+    @SerialName("cpuCapacityCores") val cpuCapacityCores: Int? = null,
+    @SerialName("memCapacityGiB") val memCapacityGiB: Double? = null
 )
 
 /**
@@ -665,7 +667,7 @@ fun Application.module() {
             val rangeMinutes =
                 call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(15, 1440) ?: 60
 
-            val (physicalHosts, k8sNodes) = coroutineScope {
+            val (physicalHosts, k8sNodes) = coroutineScope<Pair<Map<String, PhysicalHostUsageDto>, Map<String, K8sNodeUsageDto>>> {
                 val physicalDeferred = async { fetchPhysicalHostUsage(rangeMinutes) }
                 val k8sDeferred = async { fetchNodeResourceUsageSeries(rangeMinutes) }
                 physicalDeferred.await() to k8sDeferred.await()
@@ -675,12 +677,7 @@ fun Application.module() {
                 InfrastructureResourceUsageResponse(
                     rangeMinutes = rangeMinutes,
                     physicalHosts = physicalHosts,
-                    k8sNodes = k8sNodes.mapValues { (_, series) ->
-                        K8sNodeUsageDto(
-                            cpuCores = series.cpuCores.map { (t, v) -> ResourceUsagePointDto(t, v) },
-                            memGiB = series.memGiB.map { (t, v) -> ResourceUsagePointDto(t, v) }
-                        )
-                    }
+                    k8sNodes = k8sNodes
                 )
             )
         }
@@ -697,8 +694,16 @@ fun Application.module() {
                 call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(15, 1440) ?: 60
 
             // ノード単位の生データを取得してから、各軸で集約する
-            val nodeSeries = fetchNodeResourceUsageSeries(rangeMinutes)
+            val nodeSeriesRaw = fetchNodeResourceUsageSeries(rangeMinutes)
             val infraDetails = fetchInfrastructureDetails()  // Proxmoxホスト-VMマッピング用
+
+            // K8sNodeUsageDto を NodeResourceUsageSeries に変換
+            val nodeSeries = nodeSeriesRaw.mapValues { (_, dto) ->
+                NodeResourceUsageSeries(
+                    cpuCores = dto.cpuCores.map { it.timestampSeconds to it.value },
+                    memGiB = dto.memGiB.map { it.timestampSeconds to it.value }
+                )
+            }
 
             // ノード名 → PCIタイプ / 物理ホスト のマッピングを作成
             val nodeToPciType = mutableMapOf<String, String>()
