@@ -14,10 +14,18 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.parameters
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("OrganizationAdminApi")
 
 private const val ORG_REALM = "kigawa-net"
+
+/** Keycloakのアクセストークン有効期間。応答に expires_in が無い場合の既定値。 */
+private const val DEFAULT_TOKEN_TTL_SECONDS = 300L
 
 /**
  * 組織管理機能もユーザー管理機能([KeycloakAdminApi])と同様、専用のサービスアカウント
@@ -30,8 +38,23 @@ private val orgApiClientSecret = System.getenv("KEYCLOAK_ORG_API_CLIENT_SECRET")
 
 @Serializable
 private data class OrgServiceAccountTokenResponse(
-    @SerialName("access_token") val accessToken: String
+    @SerialName("access_token") val accessToken: String,
+    @SerialName("expires_in") val expiresInSeconds: Long? = null
 )
+
+/**
+ * 組織管理APIが「設定不足で」使えない場合にその理由を返す(使える場合はnull)。
+ * これまで503の本文は "organization list unavailable" という固定文字列で、原因が
+ * サービスアカウント未設定なのかKeycloakへの接続不良なのか区別できなかった(#129)。
+ */
+internal fun organizationApiUnavailableReason(
+    clientId: String? = orgApiClientId,
+    clientSecret: String? = orgApiClientSecret
+): String? =
+    if (clientId.isNullOrBlank() || clientSecret.isNullOrBlank()) {
+        "組織管理APIのサービスアカウント(KEYCLOAK_ORG_API_CLIENT_ID/KEYCLOAK_ORG_API_CLIENT_SECRET)が" +
+            "未設定です。Secret admin-panel-org-service-keycloak に clientId / clientSecret を投入してください"
+    } else null
 
 @Serializable
 data class OrganizationDomainDto(val name: String, val verified: Boolean = false)
@@ -74,23 +97,57 @@ data class AddOrganizationMemberRequest(val userId: String)
 @Serializable
 data class KigawaNetUserListDto(val users: List<OrganizationMemberDto>)
 
+/**
+ * 取得済みトークンのキャッシュ。organizations API は1回の画面表示で何度もトークンを要求していた
+ * (listMyOrganizationsは組織ごとにメンバー一覧を取り、都度トークンを発行し直していた)。
+ * 同一クライアントからの同時リクエストでトークン発行が殺到するのをMutexで防ぐ。
+ */
+private val orgTokenMutex = Mutex()
+
+@Volatile
+private var cachedOrgToken: String? = null
+
+@Volatile
+private var cachedOrgTokenExpiresAtMillis: Long = 0L
+
 private suspend fun orgServiceAccountToken(client: HttpClient): String? {
     val clientId = orgApiClientId
     val clientSecret = orgApiClientSecret
-    if (clientId.isNullOrBlank() || clientSecret.isNullOrBlank()) return null
+    if (clientId.isNullOrBlank() || clientSecret.isNullOrBlank()) {
+        logger.warn(
+            "組織管理APIのサービスアカウントが未設定です。" +
+                "Secret admin-panel-org-service-keycloak に clientId / clientSecret を投入してください"
+        )
+        return null
+    }
 
-    return try {
-        val response = client.submitForm(
-            url = "$keycloakServerUrl/realms/$ORG_REALM/protocol/openid-connect/token",
-            formParameters = parameters {
-                append("grant_type", "client_credentials")
-                append("client_id", clientId)
-                append("client_secret", clientSecret)
-            }
-        ).body<OrgServiceAccountTokenResponse>()
-        response.accessToken
-    } catch (e: Exception) {
-        null
+    // 有効期間内ならキャッシュを使う(30秒の余裕を見て早期再取得する)。
+    val now = System.currentTimeMillis()
+    cachedOrgToken?.takeIf { now < cachedOrgTokenExpiresAtMillis - 30_000L }?.let { return it }
+
+    return orgTokenMutex.withLock {
+        val nowLocked = System.currentTimeMillis()
+        cachedOrgToken?.takeIf { nowLocked < cachedOrgTokenExpiresAtMillis - 30_000L }?.let { return@withLock it }
+
+        try {
+            val response = client.submitForm(
+                url = "$keycloakServerUrl/realms/$ORG_REALM/protocol/openid-connect/token",
+                formParameters = parameters {
+                    append("grant_type", "client_credentials")
+                    append("client_id", clientId)
+                    append("client_secret", clientSecret)
+                }
+            ).body<OrgServiceAccountTokenResponse>()
+            val ttlSeconds = response.expiresInSeconds ?: DEFAULT_TOKEN_TTL_SECONDS
+            cachedOrgToken = response.accessToken
+            cachedOrgTokenExpiresAtMillis = System.currentTimeMillis() + ttlSeconds * 1000L
+            response.accessToken
+        } catch (e: Exception) {
+            cachedOrgToken = null
+            cachedOrgTokenExpiresAtMillis = 0L
+            logger.warn("組織管理APIのサービスアカウントトークン取得に失敗しました: ${e.message}", e)
+            null
+        }
     }
 }
 
@@ -102,6 +159,7 @@ suspend fun listOrganizations(client: HttpClient): OrganizationListDto? {
         }.body<List<OrganizationDto>>()
         OrganizationListDto(orgs)
     } catch (e: Exception) {
+        logger.warn("組織一覧の取得に失敗しました: ${e.message}", e)
         null
     }
 }
@@ -160,6 +218,7 @@ suspend fun listOrganizationMembers(client: HttpClient, orgId: String): Organiza
         }.body<List<OrganizationMemberDto>>()
         OrganizationMemberListDto(members)
     } catch (e: Exception) {
+        logger.warn("組織 $orgId のメンバー一覧取得に失敗しました: ${e.message}", e)
         null
     }
 }
@@ -233,6 +292,7 @@ suspend fun searchKigawaNetUsers(client: HttpClient, query: String): KigawaNetUs
         }.body<List<OrganizationMemberDto>>()
         KigawaNetUserListDto(users)
     } catch (e: Exception) {
+        logger.warn("ユーザー検索($query)に失敗しました: ${e.message}", e)
         null
     }
 }

@@ -2,7 +2,7 @@ package net.kigawa.admin.server
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.engine.cio.CIO
+import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
@@ -19,7 +19,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.IOException
+import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 
 private val logger = LoggerFactory.getLogger("ProxmoxApi")
@@ -187,9 +190,45 @@ data class InfrastructureDetailsDto(
     val standaloneNodes: List<ServerStatusDto> = emptyList()
 )
 
+/** リソース使用量グラフの1サンプル(issue #132)。 */
+@Serializable
+data class ResourceUsagePointDto(
+    @SerialName("timestampSeconds") val timestampSeconds: Long,
+    @SerialName("value") val value: Double
+)
+
+/** 物理ホスト(Proxmoxノード)のCPU・メモリ使用量のグラフ用時系列(issue #132)。 */
+@Serializable
+data class PhysicalHostUsageDto(
+    @SerialName("cpuPercent") val cpuPercent: List<ResourceUsagePointDto> = emptyList(),
+    @SerialName("memGiB") val memGiB: List<ResourceUsagePointDto> = emptyList()
+)
+
+/** nodes/{node}/rrddata の1サンプル。CPUは0..1の割合、memused/memtotalはバイト。 */
+@Serializable
+private data class ProxmoxRrdDataDto(
+    val time: Long? = null,
+    val cpu: Double? = null,
+    val memused: Double? = null,
+    val memtotal: Double? = null
+)
+
 /**
  * Proxmoxは自己署名証明書のため、専用クライアントでのみ証明書検証を無効化する(共有httpClientには
  * 影響させない)。クラスタ内部の ExternalName Service 経由でのみ通信するため許容している。
+ *
+ * エンジンは CIO ではなく OkHttp を使う(issue #118)。Ktor CIO + 自己署名TLS はこの
+ * pveproxy 相手に事象依存で
+ *   - java.io.EOFException: Not enough data available
+ *   - Connection reset / server prematurely closed the connection
+ *   - 20秒の request タイムアウト到達
+ * を断続的に起こし、/api/infrastructure および /api/infrastructure/details 全体が
+ * 30〜60秒待たされる主因になっていた(本番ログで両 Pod 同時に確認)。
+ * 一方、同一クラスタ内からの curl / wget / 生JVM HttpsURLConnection は常に成功する
+ * (当ファイルの以前のコメントでも「wget/生JVMでは再現しない」と記録済み)。
+ * 素の OkHttp は curl に近い挙動をし、実機での動作も確認できるため、Proxmox専用
+ * クライアントのみエンジンを差し替える。Kubernetes API・Keycloak・Prometheus等の
+ * 他クライアントは CIO のまま(そちらでは問題が観測されていない)。
  */
 private fun buildProxmoxHttpClient(): HttpClient {
     val trustAllManager = object : X509TrustManager {
@@ -197,20 +236,22 @@ private fun buildProxmoxHttpClient(): HttpClient {
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
         override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
     }
-    return HttpClient(CIO) {
+    val sslContext = SSLContext.getInstance("TLS").apply {
+        init(null, arrayOf(trustAllManager), SecureRandom())
+    }
+    return HttpClient(OkHttp) {
         engine {
-            https {
-                trustManager = trustAllManager
+            config {
+                sslSocketFactory(sslContext.socketFactory, trustAllManager)
+                hostnameVerifier { _, _ -> true }
+                // CIO時代と同じ境界をOkHttp側にも設定(接続10秒・読み書き20秒)
+                connectTimeout(10_000, TimeUnit.MILLISECONDS)
+                readTimeout(20_000, TimeUnit.MILLISECONDS)
+                writeTimeout(20_000, TimeUnit.MILLISECONDS)
+                // OkHttp自身の自動リトライ(retryOnConnectionFailure)は無効化し、
+                // 下のwithTimeoutRetry(5秒間隔・1回のみ)に一本化する
+                retryOnConnectionFailure(false)
             }
-            // 以前ここでendpoint.keepAliveTime = 0を設定し、接続の使い回し(keep-alive)
-            // 自体を無効化しようとしていた。しかしKtor CIOの実装(ConnectionPipeline.kt)
-            // を確認したところ、keepAliveTimeは内部で
-            // `withTimeoutOrNull(keepAliveTime) { tasks.receive() }`という形で
-            // リクエスト処理ループ自体の待機タイムアウトとして使われており、0を渡すと
-            // このタイムアウトが実質ゼロになって正常にリクエストを処理できなくなる
-            // (=接続の使い回しどころか、単発のリクエスト処理自体が不安定になる)ことが
-            // 判明した。実機で見えていたEOFException/タイムアウトの一部は、Proxmox側では
-            // なくこの設定自体が原因だった可能性が高い。デフォルト値(5000ms)に戻す。
         }
         install(ClientContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
@@ -344,6 +385,72 @@ suspend fun fetchInfrastructureDetails(): InfrastructureDetailsDto {
         client.close()
         logger.info("fetchInfrastructureDetails took ${System.currentTimeMillis() - start}ms")
     }
+}
+
+/**
+ * 物理ホストのCPU/メモリ使用量の時系列を Proxmox rrddata から取得する(issue #132)。
+ * rrddata の timeframe はサンプル解像度(5分/30分/2時間)を決めるだけで、要求範囲より広い
+ * 窓のデータが返るため、ここでは rangeMinutes 内のサンプルのみに絞り込む。
+ * 取得失敗時は該当ホストのエントリを欠落させる(呼び出し側は空マップとして処理する)。
+ */
+suspend fun fetchPhysicalHostUsage(rangeMinutes: Int): Map<String, PhysicalHostUsageDto> {
+    val auth = authHeader() ?: return emptyMap()
+    val client = buildProxmoxHttpClient()
+    try {
+        val nodes = try {
+            fetchNodes(client, auth, "Proxmox nodes fetch (resource-usage)")
+        } catch (e: Exception) {
+            logger.warn("Proxmox nodes fetch failed (resource-usage): ${e::class.qualifiedName}: ${e.message}", e)
+            return emptyMap()
+        }
+
+        val end = System.currentTimeMillis() / 1000
+        val start = end - rangeMinutes * 60L
+        val timeframe = when {
+            rangeMinutes <= 120 -> "hour"
+            rangeMinutes <= 720 -> "day"
+            else -> "week"
+        }
+
+        val results = coroutineScope {
+            nodes.filter { it.status == "online" }.map { node ->
+                async { node.node to fetchHostRrd(client, auth, node.node, timeframe, start, end) }
+            }.awaitAll()
+        }
+        return results.mapNotNull { (name, dto) -> dto?.let { name to it } }.toMap()
+    } finally {
+        client.close()
+    }
+}
+
+private suspend fun fetchHostRrd(
+    client: HttpClient,
+    auth: String,
+    nodeName: String,
+    timeframe: String,
+    start: Long,
+    end: Long
+): PhysicalHostUsageDto? = try {
+    val rows = withTimeoutRetry("Proxmox rrddata fetch for node $nodeName") {
+        client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/rrddata?timeframe=$timeframe&cf=AVERAGE") {
+            header("Authorization", auth)
+        }.body<ProxmoxEnvelope<List<ProxmoxRrdDataDto>>>().data
+    }
+    PhysicalHostUsageDto(
+        cpuPercent = rows.mapNotNull { row ->
+            val t = row.time ?: return@mapNotNull null
+            if (t !in start..end) return@mapNotNull null
+            row.cpu?.let { ResourceUsagePointDto(t, it * 100.0) }
+        },
+        memGiB = rows.mapNotNull { row ->
+            val t = row.time ?: return@mapNotNull null
+            if (t !in start..end) return@mapNotNull null
+            row.memused?.let { ResourceUsagePointDto(t, it / 1073741824.0) }
+        }
+    )
+} catch (e: Exception) {
+    logger.warn("Proxmox rrddata fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}", e)
+    null
 }
 
 private suspend fun fetchHostDetails(

@@ -66,14 +66,13 @@ spec:
             # Organizations REST API専用のサービスアカウント(client_credentials)。
             # Organizationsはkigawa-net realm(一般利用者向け)で有効化されており、
             # 上記のユーザー管理用サービスアカウントとは別のクライアント
-            # admin-panel-org-service を使う(Keycloak側の設定はこのリポジトリの範囲外)。
+            # admin-panel-org-service を使う(Keycloak側の設定はkigawa01/k8s-systemの
+            # keycloak/ 配下が担当)。クライアントIDは秘密ではないので平文で持つ。
+            # clientSecretはBitwardenから同期するSecret
+            # admin-panel-org-service-keycloak を参照する(k8s/base/org-bws.yaml)。
             # 未設定の間は組織管理系エンドポイントが503を返すのみで、他機能には影響しない。
             - name: KEYCLOAK_ORG_API_CLIENT_ID
-              valueFrom:
-                secretKeyRef:
-                  name: admin-panel-org-service-keycloak
-                  key: clientId
-                  optional: true
+              value: "admin-panel-org-service"
             - name: KEYCLOAK_ORG_API_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
