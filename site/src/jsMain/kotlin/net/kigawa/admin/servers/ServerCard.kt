@@ -136,6 +136,21 @@ internal fun ServerCard(
             "kubelet ${server.kubeletVersion} / ${server.osImage}",
             modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
         )
+        // PCIeデバイス情報(NFD由来)があれば表示
+        if (server.pciDevices.isNotEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.px),
+                verticalArrangement = Arrangement.spacedBy(2.px)
+            ) {
+                SpanText("PCIeデバイス", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
+                server.pciDevices.forEach { device ->
+                    SpanText(
+                        "${device.className} (Vendor: ${device.vendorId.uppercase()})",
+                        modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                    )
+                }
+            }
+        }
         SpanText(
             if (server.schedulable) "スケジューリング: 有効" else "スケジューリング: 停止中",
             modifier = Modifier.color(if (server.schedulable) Colors.Gray else Color("#E34948")).fontSize(FontSize.Small)

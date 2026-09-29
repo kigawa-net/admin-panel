@@ -16,7 +16,16 @@ data class ServerStatus(
     val podCount: Int? = null,
     val podCapacity: Int? = null,
     val cpuUsageCores: Double? = null,
-    val memoryUsageBytes: Long? = null
+    val memoryUsageBytes: Long? = null,
+    val pciDevices: List<PciDeviceInfo> = emptyList()
+)
+
+@Serializable
+data class PciDeviceInfo(
+    val className: String,
+    val vendorId: String,
+    val deviceId: String,
+    val present: Boolean = true
 )
 
 @Serializable
