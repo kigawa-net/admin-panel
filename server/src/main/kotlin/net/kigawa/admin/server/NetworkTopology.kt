@@ -63,8 +63,13 @@ internal data class PrometheusInstantResult(
  *   観測された機器同士だけを結ぶため、想定していなかったリンクも反映されうる。
  *   Prometheusから取得できない場合のみ、汎用フォールバックの静的connectionsを使う。
  */
-suspend fun loadNetworkTopology(client: HttpClient): NetworkTopologyDto {
-    val discoveredDevices = discoverKubernetesNodes()
+/**
+ * 指定された組織IDセットに属するノードのみを含むネットワークトポロジを返す。
+ * allowedOrgIds が null の場合は全ノードを許可(管理者用)。
+ * ノードのラベル `kigawa.net/organization` で組織IDを判定する。
+ */
+suspend fun loadNetworkTopology(client: HttpClient, allowedOrgIds: Set<String>? = null): NetworkTopologyDto {
+    val discoveredDevices = discoverKubernetesNodes(allowedOrgIds)
     val fallback = genericNetworkTopology()
     val devices = discoveredDevices.ifEmpty { fallback.devices }
 

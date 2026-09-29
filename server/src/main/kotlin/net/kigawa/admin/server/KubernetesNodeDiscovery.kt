@@ -85,7 +85,12 @@ internal data class K8sPodSpec(val nodeName: String? = null)
  * (ローカル開発時など)では ServiceAccount ファイルが存在しないため、空リストを返し
  * 呼び出し側が静的フォールバックを使う。
  */
-suspend fun discoverKubernetesNodes(): List<NetworkDeviceDto> {
+/**
+ * Kubernetes APIからノード一覧を取得し、NetworkDeviceDtoに変換する。
+ * allowedOrgIds が null でない場合、ノードのラベル `kigawa.net/organization` で
+ * 組織IDをチェックし、許可された組織のノードのみ返す。
+ */
+suspend fun discoverKubernetesNodes(allowedOrgIds: Set<String>? = null): List<NetworkDeviceDto> {
     val apiServerUrl = inClusterApiServerUrl() ?: return emptyList()
     val token = readServiceAccountToken() ?: return emptyList()
     val client = buildKubernetesHttpClient() ?: return emptyList()
@@ -98,6 +103,13 @@ suspend fun discoverKubernetesNodes(): List<NetworkDeviceDto> {
         val controlPlanes = mutableListOf<K8sNode>()
         val workers = mutableListOf<K8sNode>()
         for (node in nodeList.items) {
+            // 組織フィルタリング: allowedOrgIds が指定されている場合、ラベルでフィルタ
+            if (allowedOrgIds != null) {
+                val orgLabel = node.metadata.labels["kigawa.net/organization"]
+                if (orgLabel == null || orgLabel !in allowedOrgIds) {
+                    continue // 許可されていない組織のノードはスキップ
+                }
+            }
             (if (node.isControlPlane()) controlPlanes else workers).add(node)
         }
 

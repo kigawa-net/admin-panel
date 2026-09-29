@@ -214,7 +214,16 @@ fun Application.module() {
                 return@get
             }
 
-            call.respond(loadNetworkTopology(httpClient))
+            // ユーザーがアクセス可能な組織IDを取得(管理者は全アクセス可)
+            val isAdmin = isValidAdminToken(httpClient, token)
+            val allowedOrgIds = if (isAdmin) {
+                null // null = 全組織許可
+            } else {
+                val userId = getUserId(httpClient, adminRealmUserInfoUrl, token)
+                if (userId != null) listMyOrganizations(httpClient, userId)!!.organizations.map { it.id }.toSet() else emptySet()
+            }
+
+            call.respond(loadNetworkTopology(httpClient, allowedOrgIds))
         }
 
         get("/api/servers") {
