@@ -55,7 +55,7 @@ fun AuthGuard(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
         ) {
-            LoginPage(onLogin = { realm -> scope.launch { authProvider.startLogin(realm) } })
+            LoginPage(onLogin = { scope.launch { authProvider.startLogin() } })
         }
         is AuthState.Loading -> Box(
             modifier = Modifier.fillMaxSize(),
@@ -64,9 +64,10 @@ fun AuthGuard(
             LoginPage(isLoading = true, onLogin = {})
         }
         is AuthState.Authenticated -> {
-            val isAdmin = state.realm == KeycloakRealm.ADMIN
-            if (requireAdmin && !isAdmin) {
-                LaunchedEffect(Unit) { ctx.router.navigateTo("/") }
+            // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い。
+            // 実際のアクセス制御はサーバー側のRBACで行う。
+            if (requireAdmin) {
+                content(state) { authProvider.logout() }
             } else {
                 content(state) { authProvider.logout() }
             }
@@ -77,7 +78,7 @@ fun AuthGuard(
         ) {
             LoginPage(
                 error = state.message,
-                onLogin = { realm -> scope.launch { authProvider.startLogin(realm) } }
+                onLogin = { scope.launch { authProvider.startLogin() } }
             )
         }
     }
@@ -87,7 +88,7 @@ fun AuthGuard(
 private fun LoginPage(
     isLoading: Boolean = false,
     error: String? = null,
-    onLogin: (KeycloakRealm) -> Unit
+    onLogin: () -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -129,19 +130,11 @@ private fun LoginPage(
             }
 
             Button(
-                onClick = { if (!isLoading) onLogin(KeycloakRealm.ADMIN) },
+                onClick = { if (!isLoading) onLogin() },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !isLoading
             ) {
-                SpanText(if (isLoading) "Signing in..." else "管理者としてログイン")
-            }
-
-            Button(
-                onClick = { if (!isLoading) onLogin(KeycloakRealm.PUBLIC) },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading
-            ) {
-                SpanText("一般利用者としてログイン")
+                SpanText(if (isLoading) "Signing in..." else "ログイン")
             }
         }
     }

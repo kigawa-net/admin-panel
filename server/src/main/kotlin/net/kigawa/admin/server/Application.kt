@@ -52,15 +52,10 @@ internal val prometheusUrl =
     System.getenv("PROMETHEUS_URL") ?: "http://prometheus-operated.prometheus.svc.cluster.local:9090"
 
 /**
- * 管理用realm(全機能)とpublic用realm(閲覧専用)の2つを独立に検証する。どちらのrealmで
- * 発行されたトークンかはuserinfoエンドポイントへの到達可否で判定する(JWT自体の検証はKeycloak
- * 側のuserinfo呼び出しに委譲している)。public用realmは実運用ではKeycloak側で別途作成が必要。
- */
+ * 管理用realm(manage)のトークンを検証する。
+ * 以前は public 用 realm(kigawa-net) もあったが、issue #133 で単一レルムに統合した。 */
 private val adminRealmUserInfoUrl = System.getenv("KEYCLOAK_ADMIN_USERINFO_URL")
     ?: "https://user.kigawa.net/realms/manage/protocol/openid-connect/userinfo"
-
-private val publicRealmUserInfoUrl = System.getenv("KEYCLOAK_PUBLIC_USERINFO_URL")
-    ?: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
 
 /**
  * Expected `aud` claim on GitHub Actions OIDC tokens presented to the CI-facing GitHub App
@@ -478,7 +473,7 @@ fun Application.module() {
             }
             val result = createOrganization(httpClient, request)
             if (result.success && !isValidAdminToken(httpClient, token)) {
-                val userId = getUserId(httpClient, publicRealmUserInfoUrl, token)
+                val userId = getUserId(httpClient, adminRealmUserInfoUrl, token)
                 val orgId = userId?.let { findOrganizationIdByName(httpClient, request.name) }
                 if (userId != null && orgId != null) {
                     addOrganizationMember(httpClient, orgId, userId)
@@ -566,9 +561,9 @@ fun Application.module() {
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
                 return@get
             }
-            val userId = getUserId(httpClient, publicRealmUserInfoUrl, token)
+            val userId = getUserId(httpClient, adminRealmUserInfoUrl, token)
             if (userId == null) {
-                call.respond(HttpStatusCode.Forbidden, mapOf("error" to "not a kigawa-net realm user"))
+                call.respond(HttpStatusCode.Forbidden, mapOf("error" to "not an authenticated user"))
                 return@get
             }
             val organizations = listMyOrganizations(httpClient, userId)
@@ -809,13 +804,15 @@ fun Application.module() {
     }
 }
 
-/** 管理用realmのトークンのみ許可。サーバー管理(閲覧・操作)エンドポイントで使う。 */
+/** 管理用realm(manage)のトークンのみ許可。サーバー管理(閲覧・操作)エンドポイントで使う。 */
 private suspend fun isValidAdminToken(client: HttpClient, token: String): Boolean =
     checkUserInfo(client, adminRealmUserInfoUrl, token)
 
-/** 管理用・public用どちらのrealmのトークンでも許可。ダッシュボード系エンドポイントで使う。 */
+/** 管理用realm(manage)のトークンを許可。ダッシュボード系エンドポイントで使う。
+ * 以前は public 用 realm も許可していたが、issue #133 で単一レルム(manage)に統合したため
+ * 実質的に isValidAdminToken と同じ挙動になる。 */
 private suspend fun isValidAnyToken(client: HttpClient, token: String): Boolean =
-    checkUserInfo(client, adminRealmUserInfoUrl, token) || checkUserInfo(client, publicRealmUserInfoUrl, token)
+    checkUserInfo(client, adminRealmUserInfoUrl, token)
 
 private suspend fun checkUserInfo(client: HttpClient, userInfoUrl: String, token: String): Boolean {
     return try {
@@ -845,11 +842,11 @@ private suspend fun getUserId(client: HttpClient, userInfoUrl: String, token: St
 
 /**
  * 組織の操作(メンバー閲覧・追加・削除)を許可するか判定する。manage realmの管理者は常に許可、
- * public(kigawa-net)realmの一般ユーザーは、対象組織のメンバー本人である場合のみ許可する。
- */
+ * 同じ組織のメンバー本人である場合のみ許可する。
+ * 以前は public(kigawa-net)realm もサポートしていたが、issue #133 で単一レルムに統合した。 */
 private suspend fun canManageOrganization(client: HttpClient, token: String, orgId: String): Boolean {
     if (isValidAdminToken(client, token)) return true
-    val userId = getUserId(client, publicRealmUserInfoUrl, token) ?: return false
+    val userId = getUserId(client, adminRealmUserInfoUrl, token) ?: return false
     val members = listOrganizationMembers(client, orgId) ?: return false
     return members.members.any { it.id == userId }
 }

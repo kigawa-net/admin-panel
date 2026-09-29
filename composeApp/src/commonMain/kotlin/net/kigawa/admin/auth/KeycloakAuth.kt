@@ -18,23 +18,10 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * 管理用realm(全機能。サーバー管理の閲覧・操作を含む)とpublic用realm(閲覧専用。
- * ダッシュボード・ネットワークマップ・トラフィックのみ)の2つを切り替えてログインできる。
- * どちらのrealmで認証したかはバックエンド側でも独立に検証される(クライアント側の画面出し
- * 分けは利便性のためであり、アクセス制御の境界はサーバー側にある)。
+ * Keycloakの単一レルム(manage)での認証を扱う。
+ * 以前は管理用realm(manage)とpublic用realm(kigawa-net)の2つがあったが、
+ * issue #133で単一レルムに統合した。アクセス制御の境界はサーバー側(RBAC)で行う。
  */
-enum class KeycloakRealm(val realmName: String, val label: String) {
-    ADMIN("manage", "管理者"),
-    PUBLIC("kigawa-net", "一般利用者")
-}
-
-sealed class AuthState {
-    object Unauthenticated : AuthState()
-    object Loading : AuthState()
-    data class Authenticated(val username: String, val accessToken: String, val realm: KeycloakRealm) : AuthState()
-    data class Error(val message: String) : AuthState()
-}
-
 @Serializable
 data class TokenResponse(
     @SerialName("access_token") val accessToken: String,
@@ -62,9 +49,9 @@ object DefaultKeycloakConfig : KeycloakAuthConfig {
     override val clientId: String = "admin-panel"
 }
 
-private fun KeycloakAuthConfig.authUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/auth"
-private fun KeycloakAuthConfig.tokenUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/token"
-private fun KeycloakAuthConfig.userInfoUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/userinfo"
+private fun KeycloakAuthConfig.authUrl() = "$serverUrl/realms/manage/protocol/openid-connect/auth"
+private fun KeycloakAuthConfig.tokenUrl() = "$serverUrl/realms/manage/protocol/openid-connect/token"
+private fun KeycloakAuthConfig.userInfoUrl() = "$serverUrl/realms/manage/protocol/openid-connect/userinfo"
 
 expect fun createHttpClient(): HttpClient
 
@@ -80,7 +67,6 @@ expect fun currentTimeMillis(): Long
 private const val REFRESH_MARGIN_MS = 30_000L
 
 data class PersistedSession(
-    val realm: KeycloakRealm,
     val username: String,
     val accessToken: String,
     val refreshToken: String?,
@@ -108,10 +94,9 @@ private fun generatePkceRequest(): PkceRequest {
 
 private fun buildAuthorizationUrl(
     config: KeycloakAuthConfig,
-    realm: KeycloakRealm,
     redirectUri: String,
     pkce: PkceRequest
-): String = URLBuilder(config.authUrl(realm)).apply {
+): String = URLBuilder(config.authUrl()).apply {
     parameters.append("response_type", "code")
     parameters.append("client_id", config.clientId)
     parameters.append("redirect_uri", redirectUri)
@@ -143,7 +128,6 @@ class KeycloakAuthProvider(
 
     private var pendingVerifier: String? = null
     private var pendingState: String? = null
-    private var pendingRealm: KeycloakRealm? = null
     private var refreshJob: Job? = null
 
     init {
@@ -151,10 +135,9 @@ class KeycloakAuthProvider(
         if (session != null) {
             _authState.value = AuthState.Authenticated(
                 username = session.username,
-                accessToken = session.accessToken,
-                realm = session.realm
+                accessToken = session.accessToken
             )
-            scheduleAutoRefresh(session.realm)
+            scheduleAutoRefresh()
         }
     }
 
@@ -164,7 +147,7 @@ class KeycloakAuthProvider(
      * minutes). Runs immediately if the persisted token is already expired (e.g. the app was
      * closed for longer than the access-token lifetime).
      */
-    private fun scheduleAutoRefresh(realm: KeycloakRealm) {
+    private fun scheduleAutoRefresh() {
         refreshJob?.cancel()
         refreshJob = scope.launch {
             while (true) {
@@ -175,7 +158,7 @@ class KeycloakAuthProvider(
                     0L
                 }
                 delay(delayMs)
-                if (!refreshAccessToken(realm)) {
+                if (!refreshAccessToken()) {
                     handleRefreshFailure()
                     break
                 }
@@ -193,12 +176,12 @@ class KeycloakAuthProvider(
 
     /** Exchanges the persisted refresh token for a new access token. Returns false if that fails
      * (refresh token expired/revoked). */
-    private suspend fun refreshAccessToken(realm: KeycloakRealm): Boolean {
+    private suspend fun refreshAccessToken(): Boolean {
         val session = tokenStorage.load() ?: return false
         val refreshToken = session.refreshToken ?: return false
         return try {
             val tokenResponse = httpClient.submitForm(
-                url = config.tokenUrl(realm),
+                url = config.tokenUrl(),
                 formParameters = parameters {
                     append("grant_type", "refresh_token")
                     append("client_id", config.clientId)
@@ -208,7 +191,6 @@ class KeycloakAuthProvider(
 
             tokenStorage.save(
                 PersistedSession(
-                    realm = realm,
                     username = session.username,
                     accessToken = tokenResponse.accessToken,
                     refreshToken = tokenResponse.refreshToken ?: refreshToken,
@@ -226,13 +208,12 @@ class KeycloakAuthProvider(
         }
     }
 
-    fun login(realm: KeycloakRealm) {
+    fun login() {
         val pkce = generatePkceRequest()
         pendingVerifier = pkce.codeVerifier
         pendingState = pkce.state
-        pendingRealm = realm
         _authState.value = AuthState.Loading
-        launchAuthorizationUrl(buildAuthorizationUrl(config, realm, redirectUri, pkce))
+        launchAuthorizationUrl(buildAuthorizationUrl(config, redirectUri, pkce))
     }
 
     /** Call once the platform has captured the redirect to [redirectUri]. */
@@ -243,12 +224,10 @@ class KeycloakAuthProvider(
         }
         val expectedState = pendingState
         val codeVerifier = pendingVerifier
-        val realm = pendingRealm
         pendingState = null
         pendingVerifier = null
-        pendingRealm = null
 
-        if (code == null || state == null || state != expectedState || codeVerifier == null || realm == null) {
+        if (code == null || state == null || state != expectedState || codeVerifier == null) {
             _authState.value = AuthState.Error("認証レスポンスが不正です")
             return
         }
@@ -257,7 +236,7 @@ class KeycloakAuthProvider(
             _authState.value = AuthState.Loading
             try {
                 val tokenResponse = httpClient.submitForm(
-                    url = config.tokenUrl(realm),
+                    url = config.tokenUrl(),
                     formParameters = parameters {
                         append("grant_type", "authorization_code")
                         append("client_id", config.clientId)
@@ -267,7 +246,7 @@ class KeycloakAuthProvider(
                     }
                 ).body<TokenResponse>()
 
-                val userInfo = httpClient.get(config.userInfoUrl(realm)) {
+                val userInfo = httpClient.get(config.userInfoUrl()) {
                     bearerAuth(tokenResponse.accessToken)
                 }.body<UserInfoResponse>()
 
@@ -278,7 +257,6 @@ class KeycloakAuthProvider(
 
                 tokenStorage.save(
                     PersistedSession(
-                        realm = realm,
                         username = displayName,
                         accessToken = tokenResponse.accessToken,
                         refreshToken = tokenResponse.refreshToken,
@@ -288,10 +266,9 @@ class KeycloakAuthProvider(
 
                 _authState.value = AuthState.Authenticated(
                     username = displayName,
-                    accessToken = tokenResponse.accessToken,
-                    realm = realm
+                    accessToken = tokenResponse.accessToken
                 )
-                scheduleAutoRefresh(realm)
+                scheduleAutoRefresh()
             } catch (e: Exception) {
                 _authState.value = AuthState.Error(
                     message = e.message ?: "Authentication failed"
@@ -311,4 +288,11 @@ class KeycloakAuthProvider(
         scope.cancel()
         httpClient.close()
     }
+}
+
+sealed class AuthState {
+    object Unauthenticated : AuthState()
+    object Loading : AuthState()
+    data class Authenticated(val username: String, val accessToken: String) : AuthState()
+    data class Error(val message: String) : AuthState()
 }

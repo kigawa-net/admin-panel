@@ -6,13 +6,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import net.kigawa.admin.auth.KeycloakRealm
 
 @Composable
 fun LoginScreen(
     isLoading: Boolean = false,
     error: String? = null,
-    onLogin: (KeycloakRealm) -> Unit
+    onLogin: () -> Unit
 ) {
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -50,7 +49,7 @@ fun LoginScreen(
                 }
 
                 Button(
-                    onClick = { onLogin(KeycloakRealm.ADMIN) },
+                    onClick = onLogin,
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !isLoading
                 ) {
@@ -60,16 +59,8 @@ fun LoginScreen(
                             color = MaterialTheme.colorScheme.onPrimary
                         )
                     } else {
-                        Text("管理者としてログイン")
+                        Text("ログイン")
                     }
-                }
-
-                OutlinedButton(
-                    onClick = { onLogin(KeycloakRealm.PUBLIC) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isLoading
-                ) {
-                    Text("一般利用者としてログイン")
                 }
             }
         }

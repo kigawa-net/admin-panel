@@ -4,7 +4,6 @@ import androidx.compose.runtime.Composable
 import com.varabyte.kobweb.core.Page
 import com.varabyte.kobweb.core.rememberPageContext
 import net.kigawa.admin.auth.AuthGuard
-import net.kigawa.admin.auth.KeycloakRealm
 import net.kigawa.admin.layout.AppShell
 import net.kigawa.admin.organizations.OrganizationPage
 
@@ -12,12 +11,12 @@ import net.kigawa.admin.organizations.OrganizationPage
 @Composable
 fun OrganizationsRoute() {
     val ctx = rememberPageContext()
-    AuthGuard { state, _ ->
-        val isAdmin = state.realm == KeycloakRealm.ADMIN
-        AppShell(isAdmin = isAdmin) {
+    AuthGuard(requireAdmin = true) { state, _ ->
+        // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い
+        AppShell(isAdmin = true) {
             OrganizationPage(
                 accessToken = state.accessToken,
-                isAdmin = isAdmin,
+                isAdmin = true,
                 onBack = { ctx.router.navigateTo("/") }
             )
         }

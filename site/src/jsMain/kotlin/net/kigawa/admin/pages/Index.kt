@@ -16,7 +16,6 @@ import com.varabyte.kobweb.core.rememberPageContext
 import com.varabyte.kobweb.silk.components.forms.Button
 import com.varabyte.kobweb.silk.components.text.SpanText
 import net.kigawa.admin.auth.AuthGuard
-import net.kigawa.admin.auth.KeycloakRealm
 import net.kigawa.admin.layout.AppShell
 import org.jetbrains.compose.web.css.*
 
@@ -25,11 +24,11 @@ import org.jetbrains.compose.web.css.*
 fun HomePage() {
     val ctx = rememberPageContext()
     AuthGuard { state, logout ->
-        val isAdmin = state.realm == KeycloakRealm.ADMIN
-        AppShell(isAdmin = isAdmin) {
+        // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い
+        AppShell(isAdmin = true) {
             DashboardPage(
                 username = state.username,
-                isAdmin = isAdmin,
+                isAdmin = true,
                 onLogout = logout,
                 onOpenNetworkMap = { ctx.router.navigateTo("/network-map") },
                 onOpenUsers = { ctx.router.navigateTo("/users") },

@@ -29,22 +29,10 @@ import org.w3c.dom.set
 import kotlin.js.Promise
 
 /**
- * 管理用realm(全機能。サーバー管理の閲覧・操作を含む)とpublic用realm(閲覧専用。
- * ダッシュボード・ネットワークマップ・トラフィックのみ)の2つを切り替えてログインできる。
- * どちらのrealmで認証したかはバックエンド側でも独立に検証される。
+ * Keycloakの単一レルム(manage)での認証を扱う。
+ * 以前は管理用realm(manage)とpublic用realm(kigawa-net)の2つがあったが、
+ * issue #133で単一レルムに統合した。アクセス制御の境界はサーバー側(RBAC)で行う。
  */
-enum class KeycloakRealm(val realmName: String, val label: String) {
-    ADMIN("manage", "管理者"),
-    PUBLIC("kigawa-net", "一般利用者")
-}
-
-sealed class AuthState {
-    object Unauthenticated : AuthState()
-    object Loading : AuthState()
-    data class Authenticated(val username: String, val accessToken: String, val realm: KeycloakRealm) : AuthState()
-    data class Error(val message: String) : AuthState()
-}
-
 @Serializable
 data class TokenResponse(
     @SerialName("access_token") val accessToken: String,
@@ -66,16 +54,23 @@ data class UserInfoResponse(
 object KeycloakConfig {
     val serverUrl: String = js("window.__KEYCLOAK_URL__ || 'https://user.kigawa.net'") as String
     val clientId: String = js("window.__KEYCLOAK_CLIENT_ID__ || 'admin-panel'") as String
+    val realm: String = "manage"
 
-    fun authUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/auth"
-    fun tokenUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/token"
-    fun userInfoUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/userinfo"
-    fun logoutUrl(realm: KeycloakRealm) = "$serverUrl/realms/${realm.realmName}/protocol/openid-connect/logout"
+    fun authUrl() = "$serverUrl/realms/$realm/protocol/openid-connect/auth"
+    fun tokenUrl() = "$serverUrl/realms/$realm/protocol/openid-connect/token"
+    fun userInfoUrl() = "$serverUrl/realms/$realm/protocol/openid-connect/userinfo"
+    fun logoutUrl() = "$serverUrl/realms/$realm/protocol/openid-connect/logout"
+}
+
+sealed class AuthState {
+    object Unauthenticated : AuthState()
+    object Loading : AuthState()
+    data class Authenticated(val username: String, val accessToken: String) : AuthState()
+    data class Error(val message: String) : AuthState()
 }
 
 private const val KEY_CODE_VERIFIER = "kc_code_verifier"
 private const val KEY_STATE = "kc_state"
-private const val KEY_REALM = "kc_realm"
 private const val KEY_ACCESS_TOKEN = "kc_access_token"
 private const val KEY_ID_TOKEN = "kc_id_token"
 private const val KEY_REFRESH_TOKEN = "kc_refresh_token"
@@ -134,10 +129,9 @@ class KeycloakAuthProvider : AutoCloseable {
     fun init() {
         val token = localStorage[KEY_ACCESS_TOKEN]
         val username = localStorage[KEY_USERNAME]
-        val realm = localStorage[KEY_REALM]?.let { name -> KeycloakRealm.entries.find { it.realmName == name } }
-        if (token != null && username != null && realm != null) {
-            _authState.value = AuthState.Authenticated(username = username, accessToken = token, realm = realm)
-            scheduleAutoRefresh(realm)
+        if (token != null && username != null) {
+            _authState.value = AuthState.Authenticated(username = username, accessToken = token)
+            scheduleAutoRefresh()
         }
     }
 
@@ -147,7 +141,7 @@ class KeycloakAuthProvider : AutoCloseable {
      * app has no other mechanism to renew them. Each page navigation creates a fresh provider
      * (and thus a fresh loop), so this only needs to cover a single page's lifetime.
      */
-    private fun scheduleAutoRefresh(realm: KeycloakRealm) {
+    private fun scheduleAutoRefresh() {
         refreshJob?.cancel()
         refreshJob = scope.launch {
             while (true) {
@@ -158,7 +152,7 @@ class KeycloakAuthProvider : AutoCloseable {
                     0L
                 }
                 delay(delayMs)
-                if (!refreshAccessToken(realm)) {
+                if (!refreshAccessToken()) {
                     handleRefreshFailure()
                     break
                 }
@@ -175,18 +169,17 @@ class KeycloakAuthProvider : AutoCloseable {
         localStorage.removeItem(KEY_REFRESH_TOKEN)
         localStorage.removeItem(KEY_EXPIRES_AT)
         localStorage.removeItem(KEY_USERNAME)
-        localStorage.removeItem(KEY_REALM)
         _authState.value = AuthState.Error("セッションの有効期限が切れました。再度ログインしてください。")
     }
 
     /** Exchanges the stored refresh token for a new access token. Returns false if that fails
      * (refresh token expired/revoked), leaving the current, likely-now-stale access token in
      * place until the user next has to log in again. */
-    private suspend fun refreshAccessToken(realm: KeycloakRealm): Boolean {
+    private suspend fun refreshAccessToken(): Boolean {
         val refreshToken = localStorage[KEY_REFRESH_TOKEN] ?: return false
         return try {
             val tokenResponse = httpClient.submitForm(
-                url = KeycloakConfig.tokenUrl(realm),
+                url = KeycloakConfig.tokenUrl(),
                 formParameters = parameters {
                     append("grant_type", "refresh_token")
                     append("client_id", KeycloakConfig.clientId)
@@ -219,14 +212,13 @@ class KeycloakAuthProvider : AutoCloseable {
         }
     }
 
-    suspend fun startLogin(realm: KeycloakRealm) {
+    suspend fun startLogin() {
         val codeVerifier = generateRandom(128)
         val state = generateRandom(32)
         val codeChallenge = sha256Base64Url(codeVerifier)
 
         localStorage[KEY_CODE_VERIFIER] = codeVerifier
         localStorage[KEY_STATE] = state
-        localStorage[KEY_REALM] = realm.realmName
 
         val redirectUri = "${window.location.origin}/callback"
         val params = URLSearchParams()
@@ -243,7 +235,7 @@ class KeycloakAuthProvider : AutoCloseable {
         params.set("code_challenge", codeChallenge)
         params.set("code_challenge_method", "S256")
 
-        window.location.href = "${KeycloakConfig.authUrl(realm)}?$params"
+        window.location.href = "${KeycloakConfig.authUrl()}?$params"
     }
 
     suspend fun handleCallback(code: String, state: String) {
@@ -256,8 +248,7 @@ class KeycloakAuthProvider : AutoCloseable {
         }
 
         val codeVerifier = localStorage[KEY_CODE_VERIFIER]
-        val realm = localStorage[KEY_REALM]?.let { name -> KeycloakRealm.entries.find { it.realmName == name } }
-        if (codeVerifier == null || realm == null) {
+        if (codeVerifier == null) {
             _authState.value = AuthState.Error("Missing code verifier")
             return
         }
@@ -268,7 +259,7 @@ class KeycloakAuthProvider : AutoCloseable {
         try {
             val redirectUri = "${window.location.origin}/callback"
             val tokenResponse = httpClient.submitForm(
-                url = KeycloakConfig.tokenUrl(realm),
+                url = KeycloakConfig.tokenUrl(),
                 formParameters = parameters {
                     append("grant_type", "authorization_code")
                     append("client_id", KeycloakConfig.clientId)
@@ -278,7 +269,7 @@ class KeycloakAuthProvider : AutoCloseable {
                 }
             ).body<TokenResponse>()
 
-            val userInfo = httpClient.get(KeycloakConfig.userInfoUrl(realm)) {
+            val userInfo = httpClient.get(KeycloakConfig.userInfoUrl()) {
                 bearerAuth(tokenResponse.accessToken)
             }.body<UserInfoResponse>()
 
@@ -292,8 +283,7 @@ class KeycloakAuthProvider : AutoCloseable {
 
             _authState.value = AuthState.Authenticated(
                 username = displayName,
-                accessToken = tokenResponse.accessToken,
-                realm = realm
+                accessToken = tokenResponse.accessToken
             )
 
             window.location.href = "/"
@@ -304,15 +294,12 @@ class KeycloakAuthProvider : AutoCloseable {
 
     fun logout() {
         val idToken = localStorage[KEY_ID_TOKEN]
-        val realm = localStorage[KEY_REALM]?.let { name -> KeycloakRealm.entries.find { it.realmName == name } }
-            ?: KeycloakRealm.ADMIN
         refreshJob?.cancel()
         localStorage.removeItem(KEY_ACCESS_TOKEN)
         localStorage.removeItem(KEY_ID_TOKEN)
         localStorage.removeItem(KEY_REFRESH_TOKEN)
         localStorage.removeItem(KEY_EXPIRES_AT)
         localStorage.removeItem(KEY_USERNAME)
-        localStorage.removeItem(KEY_REALM)
         _authState.value = AuthState.Unauthenticated
 
         val params = URLSearchParams()
@@ -320,7 +307,7 @@ class KeycloakAuthProvider : AutoCloseable {
         params.set("post_logout_redirect_uri", window.location.origin)
         if (idToken != null) params.set("id_token_hint", idToken)
 
-        window.location.href = "${KeycloakConfig.logoutUrl(realm)}?$params"
+        window.location.href = "${KeycloakConfig.logoutUrl()}?$params"
     }
 
     override fun close() {

@@ -3,7 +3,6 @@ package net.kigawa.admin
 import androidx.compose.runtime.*
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
-import net.kigawa.admin.auth.KeycloakRealm
 import net.kigawa.admin.infrastructure.InfrastructureScreen
 import net.kigawa.admin.networkmap.NetworkMapScreen
 import net.kigawa.admin.organizations.OrganizationScreen
@@ -34,16 +33,15 @@ fun App(authProvider: KeycloakAuthProvider) {
 
     when (val state = authState) {
         is AuthState.Unauthenticated -> {
-            LoginScreen(onLogin = { realm -> authProvider.login(realm) })
+            LoginScreen(onLogin = { authProvider.login() })
         }
         is AuthState.Loading -> {
             LoginScreen(isLoading = true, onLogin = {})
         }
         is AuthState.Authenticated -> {
-            // サーバー管理・ユーザー管理画面はUI上も管理用realmのユーザーにのみ表示する。実際の
-            // アクセス制御はバックエンド側でも独立に(realmごとに)検証されるため、これは利便性
-            // のための制御。
-            val isAdmin = state.realm == KeycloakRealm.ADMIN
+            // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い。
+            // 実際のアクセス制御はサーバー側のRBACで行う。
+            val isAdmin = true
             when (currentScreen) {
                 AppScreen.Dashboard -> DashboardScreen(
                     username = state.username,
@@ -89,7 +87,7 @@ fun App(authProvider: KeycloakAuthProvider) {
         is AuthState.Error -> {
             LoginScreen(
                 error = state.message,
-                onLogin = { realm -> authProvider.login(realm) }
+                onLogin = { authProvider.login() }
             )
         }
     }
