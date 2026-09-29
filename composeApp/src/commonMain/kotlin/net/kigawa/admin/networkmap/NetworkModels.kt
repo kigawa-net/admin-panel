@@ -27,7 +27,9 @@ data class NetworkDevice(
 @Serializable
 data class NetworkConnection(
     val fromId: String,
-    val toId: String
+    val toId: String,
+    /** 接続のインターフェイス(conntrack-exporterから)。WireGuardなら"wg0"等。 */
+    @SerialName("interface") val `interface`: String? = null
 )
 
 @Serializable

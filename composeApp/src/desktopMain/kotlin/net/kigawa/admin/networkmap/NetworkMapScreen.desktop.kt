@@ -34,6 +34,14 @@ import kotlin.math.hypot
 import net.kigawa.admin.auth.createHttpClient
 
 // Fixed categorical order (dataviz palette slots) — never reassigned per device identity.
+private val TUNNEL_INTERFACE_KEYWORDS = listOf("wg", "wireguard", "tun", "vxlan", "gre")
+
+/** 接続がトンネル(WireGuard等)かどうか判定 */
+private fun isTunnelConnection(connection: NetworkConnection): Boolean {
+    val iface = connection.`interface`?.lowercase() ?: return false
+    return TUNNEL_INTERFACE_KEYWORDS.any { iface.contains(it) }
+}
+
 private fun colorForType(type: DeviceType): Color = when (type) {
     DeviceType.INTERNET -> Color(0xFF607D8B) // neutral: outside the LAN, not a categorical entity
     DeviceType.ROUTER -> Color(0xFF2A78D6) // slot 1: blue
@@ -103,12 +111,25 @@ actual fun NetworkMapScreen(accessToken: String, onBack: () -> Unit) {
                     val from = topology.devices.find { it.id == connection.fromId }
                     val to = topology.devices.find { it.id == connection.toId }
                     if (from != null && to != null) {
+                        val isTunnel = isTunnelConnection(connection)
+                        val lineColor = if (isTunnel) Color(0xFF7C4DFF) else Color(0xFF9E9E9E)
+                        val strokeWidth = if (isTunnel) 5f else 4f
                         drawLine(
-                            color = Color(0xFF9E9E9E),
+                            color = lineColor,
                             start = center(from),
                             end = center(to),
-                            strokeWidth = 4f
+                            strokeWidth = strokeWidth
                         )
+                        // トンネル接続の場合、中間に「WG」ラベルを表示
+                        if (isTunnel) {
+                            val mx = (center(from).x + center(to).x) / 2f
+                            val my = (center(from).y + center(to).y) / 2f
+                            val layout = textMeasurer.measure("WG", style = TextStyle(fontSize = 11.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = Color(0xFF7C4DFF)))
+                            drawText(
+                                textLayoutResult = layout,
+                                topLeft = Offset(mx - layout.size.width / 2, my - layout.size.height / 2 - 8f)
+                            )
+                        }
                     }
                 }
 

@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.http.URLBuilder
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
@@ -21,7 +22,9 @@ data class NetworkDeviceDto(
 @Serializable
 data class NetworkConnectionDto(
     val fromId: String,
-    val toId: String
+    val toId: String,
+    /** 接続のインターフェイス種別(conntrack-exporterのinterfaceラベル)。WireGuardなら"wg0"等。 */
+    @SerialName("interface") val `interface`: String? = null
 )
 
 @Serializable
@@ -101,7 +104,8 @@ private suspend fun queryConntrackConnections(
 
         val pairKey = setOf(fromId, toId)
         if (seenPairs.add(pairKey)) {
-            connections.add(NetworkConnectionDto(fromId, toId))
+            val iface = sample.metric["interface"]  // conntrack-exporter が出力する場合のみ
+            connections.add(NetworkConnectionDto(fromId, toId, iface))
         }
     }
     return connections

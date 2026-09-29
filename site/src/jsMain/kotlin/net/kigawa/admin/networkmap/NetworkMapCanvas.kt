@@ -21,6 +21,9 @@ import kotlin.math.hypot
 private const val CANVAS_ID = "network-map-canvas"
 private const val NODE_RADIUS = 20.0
 
+/** WireGuard等のトンネルインターフェイスとみなすキーワード */
+fun getTunnelInterfaceKeywords(): List<String> = listOf("wg", "wireguard", "tun", "vxlan", "gre")
+
 fun colorForType(type: DeviceType): String = when (type) {
     DeviceType.INTERNET -> "#607D8B"
     DeviceType.ROUTER -> "#2A78D6"
@@ -28,6 +31,83 @@ fun colorForType(type: DeviceType): String = when (type) {
     DeviceType.PC -> "#E87BA4"
     DeviceType.WORKER -> "#1BAF7A"
     DeviceType.GATEWAY -> "#EB6834"
+}
+
+/** 接続がトンネル(WireGuard等)かどうか判定 */
+fun isTunnelConnection(connection: NetworkConnection): Boolean {
+    val iface = connection.`interface`?.lowercase() ?: return false
+    return getTunnelInterfaceKeywords().any { iface.contains(it) }
+}
+
+/** トンネル接続用の破線パターン */
+private val TUNNEL_DASH = doubleArrayOf(6.0, 3.0)
+/** トンネル線用の破線パターン(凡例以外) */
+private val TUNNEL_LINE_DASH = doubleArrayOf(8.0, 4.0)
+/** 空の破線パターン(実線) */
+private val EMPTY_DASH = doubleArrayOf(0.0)
+
+/** トンネル接続用の色(青紫系) */
+private val TUNNEL_COLOR = "#7C4DFF"
+/** 通常接続用の色(グレー) */
+private val REGULAR_COLOR = "#9E9E9E"
+
+/** 角丸矩形を手動で描画(Kotlin/JSではroundRect未対応のため) */
+fun drawRoundRect(ctx: CanvasRenderingContext2D, x: Double, y: Double, w: Double, h: Double, r: Double) {
+    ctx.beginPath()
+    ctx.moveTo(x + r, y)
+    ctx.lineTo(x + w - r, y)
+    ctx.arcTo(x + w, y, x + w, y + r, r)
+    ctx.lineTo(x + w, y + h - r)
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r)
+    ctx.lineTo(x + r, y + h)
+    ctx.arcTo(x, y + h, x, y + h - r, r)
+    ctx.lineTo(x, y + r)
+    ctx.arcTo(x, y, x + r, y, r)
+    ctx.closePath()
+}
+
+/** 右下に接続種別の凡例を描画 */
+fun drawLegend(ctx: CanvasRenderingContext2D, width: Double, height: Double) {
+    val legendX = width - 160.0
+    val legendY = height - 70.0
+    val boxW = 140.0
+    val boxH = 55.0
+
+    // 背景(角丸矩形を手動で描画)
+    ctx.fillStyle = "rgba(255,255,255,0.9)"
+    ctx.strokeStyle = "#E0E0E0"
+    ctx.lineWidth = 1.0
+    drawRoundRect(ctx, legendX, legendY, boxW, boxH, 6.0)
+    ctx.fill()
+    ctx.stroke()
+
+    // 通常接続
+    ctx.strokeStyle = REGULAR_COLOR
+    ctx.lineWidth = 2.0
+    ctx.beginPath()
+    ctx.moveTo(legendX + 12.0, legendY + 18.0)
+    ctx.lineTo(legendX + 42.0, legendY + 18.0)
+    ctx.stroke()
+    ctx.fillStyle = "#212121"
+    ctx.font = "11px sans-serif"
+    ctx.asDynamic().textAlign = "left"
+    ctx.fillText("通常接続", legendX + 50.0, legendY + 21.0)
+
+    // トンネル接続
+    ctx.strokeStyle = TUNNEL_COLOR
+    ctx.lineWidth = 2.5
+    ctx.asDynamic().setLineDash(TUNNEL_DASH)
+    ctx.beginPath()
+    ctx.moveTo(legendX + 12.0, legendY + 38.0)
+    ctx.lineTo(legendX + 42.0, legendY + 38.0)
+    ctx.stroke()
+    ctx.asDynamic().setLineDash(EMPTY_DASH)
+    ctx.fillStyle = TUNNEL_COLOR
+    ctx.font = "bold 11px sans-serif"
+    ctx.fillText("WG", legendX + 44.0, legendY + 41.0)
+    ctx.fillStyle = "#212121"
+    ctx.font = "11px sans-serif"
+    ctx.fillText("WireGuard トンネル", legendX + 50.0, legendY + 41.0)
 }
 
 @Composable
@@ -50,26 +130,47 @@ fun NetworkMapCanvas(
 
     fun redraw() {
         val canvas = document.getElementById(CANVAS_ID) as? HTMLCanvasElement ?: return
-        val width = canvas.clientWidth
-        val height = canvas.clientHeight
-        if (canvas.width != width) canvas.width = width
-        if (canvas.height != height) canvas.height = height
+        val width = canvas.clientWidth.toDouble()
+        val height = canvas.clientHeight.toDouble()
+        if (canvas.width != canvas.clientWidth) canvas.width = canvas.clientWidth
+        if (canvas.height != canvas.clientHeight) canvas.height = canvas.clientHeight
 
         val ctx = canvas.getContext("2d") as CanvasRenderingContext2D
         ctx.clearRect(0.0, 0.0, canvas.width.toDouble(), canvas.height.toDouble())
 
-        ctx.strokeStyle = "#9E9E9E"
-        ctx.lineWidth = 2.0
+        // 接続線を描画(トンネルと通常でスタイルを分ける)
         topology.connections.forEach { connection ->
             val from = topology.devices.find { it.id == connection.fromId }
             val to = topology.devices.find { it.id == connection.toId }
             if (from != null && to != null) {
                 val (fx, fy) = deviceCenter(canvas, from)
                 val (tx, ty) = deviceCenter(canvas, to)
+                val isTunnel = isTunnelConnection(connection)
                 ctx.beginPath()
                 ctx.moveTo(fx, fy)
                 ctx.lineTo(tx, ty)
+                if (isTunnel) {
+                    ctx.strokeStyle = TUNNEL_COLOR
+                    ctx.lineWidth = 2.5
+                    // 破線でトンネルを表現
+                    ctx.asDynamic().setLineDash(TUNNEL_LINE_DASH)
+                } else {
+                    ctx.strokeStyle = REGULAR_COLOR
+                    ctx.lineWidth = 2.0
+                    ctx.asDynamic().setLineDash(EMPTY_DASH)
+                }
                 ctx.stroke()
+                ctx.asDynamic().setLineDash(EMPTY_DASH)
+
+                // トンネル接続の場合、中間に「WG」ラベルを表示
+                if (isTunnel) {
+                    val mx = (fx + tx) / 2.0
+                    val my = (fy + ty) / 2.0
+                    ctx.fillStyle = TUNNEL_COLOR
+                    ctx.font = "bold 11px sans-serif"
+                    ctx.asDynamic().textAlign = "center"
+                    ctx.fillText("WG", mx, my - 4.0)
+                }
             }
         }
 
@@ -97,6 +198,9 @@ fun NetworkMapCanvas(
             ctx.asDynamic().textAlign = "center"
             ctx.fillText(device.name, x, y + NODE_RADIUS + 16.0)
         }
+
+        // 凡例(右下)
+        drawLegend(ctx, width, height)
     }
 
     LaunchedEffect(topology, selectedDevice, panX, panY) {

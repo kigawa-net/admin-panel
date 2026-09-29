@@ -11,6 +11,14 @@ import android.view.SurfaceView
 import kotlin.math.hypot
 
 // Fixed categorical order (dataviz palette slots) — never reassigned per device identity.
+private val TUNNEL_INTERFACE_KEYWORDS = listOf("wg", "wireguard", "tun", "vxlan", "gre")
+
+/** 接続がトンネル(WireGuard等)かどうか判定 */
+private fun isTunnelConnection(connection: NetworkConnection): Boolean {
+    val iface = connection.interface?.lowercase() ?: return false
+    return TUNNEL_INTERFACE_KEYWORDS.any { iface.contains(it) }
+}
+
 private fun colorForType(type: DeviceType): Int = when (type) {
     DeviceType.INTERNET -> Color.rgb(0x60, 0x7D, 0x8B) // neutral: outside the LAN, not a categorical entity
     DeviceType.ROUTER -> Color.rgb(0x2A, 0x78, 0xD6) // slot 1: blue
@@ -64,6 +72,18 @@ class NetworkMapSurfaceView(context: Context) : SurfaceView(context), SurfaceHol
         textAlign = Paint.Align.CENTER
         textSize = 11f * density
     }
+    private val tunnelLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(0x7C, 0x4D, 0xFF)
+        strokeWidth = 5f * density
+        style = Paint.Style.STROKE
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f * density, 6f * density), 0f)
+    }
+    private val tunnelLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(0x7C, 0x4D, 0xFF)
+        textAlign = Paint.Align.CENTER
+        textSize = 11f * density
+        isFakeBoldText = true
+    }
     private val backgroundColor = Color.rgb(0xFA, 0xFA, 0xFA)
 
     init {
@@ -97,7 +117,16 @@ class NetworkMapSurfaceView(context: Context) : SurfaceView(context), SurfaceHol
                 val to = topology.devices.find { it.id == connection.toId } ?: continue
                 val (fx, fy) = nodeCenter(from)
                 val (tx, ty) = nodeCenter(to)
-                canvas.drawLine(fx, fy, tx, ty, linePaint)
+                val isTunnel = isTunnelConnection(connection)
+                if (isTunnel) {
+                    canvas.drawLine(fx, fy, tx, ty, tunnelLinePaint)
+                    // トンネル接続の場合、中間に「WG」ラベルを表示
+                    val mx = (fx + tx) / 2f
+                    val my = (fy + ty) / 2f
+                    canvas.drawText("WG", mx, my - 8f * density, tunnelLabelPaint)
+                } else {
+                    canvas.drawLine(fx, fy, tx, ty, linePaint)
+                }
             }
 
             for (device in topology.devices) {
