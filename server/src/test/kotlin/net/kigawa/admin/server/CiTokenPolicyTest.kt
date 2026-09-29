@@ -1,12 +1,13 @@
 package net.kigawa.admin.server
 
 import kotlin.test.Test
+import kotlinx.coroutines.runBlocking
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CiTokenPolicyTest {
     @Test
-    fun `allows a request fully within policy`() {
+    fun `allows a request fully within policy`() = runBlocking {
         val error = checkCiTokenRequest(
             callerRepository = "OneServerMC/RpgCore",
             requestedOwner = "OneServerMC",
@@ -17,7 +18,7 @@ class CiTokenPolicyTest {
     }
 
     @Test
-    fun `rejects an unknown caller repository`() {
+    fun `rejects an unknown caller repository`() = runBlocking {
         val error = checkCiTokenRequest(
             callerRepository = "someone/unrelated",
             requestedOwner = "OneServerMC",
@@ -28,7 +29,7 @@ class CiTokenPolicyTest {
     }
 
     @Test
-    fun `rejects a repository outside the allowlist`() {
+    fun `rejects a repository outside the allowlist`() = runBlocking {
         val error = checkCiTokenRequest(
             callerRepository = "OneServerMC/RpgCore",
             requestedOwner = "OneServerMC",
@@ -39,7 +40,7 @@ class CiTokenPolicyTest {
     }
 
     @Test
-    fun `rejects a permission outside the allowlist`() {
+    fun `rejects a permission outside the allowlist`() = runBlocking {
         val error = checkCiTokenRequest(
             callerRepository = "OneServerMC/RpgCore",
             requestedOwner = "OneServerMC",
@@ -50,7 +51,7 @@ class CiTokenPolicyTest {
     }
 
     @Test
-    fun `rejects an owner mismatch`() {
+    fun `rejects an owner mismatch`() = runBlocking {
         val error = checkCiTokenRequest(
             callerRepository = "OneServerMC/RpgCore",
             requestedOwner = "kigawa-net",

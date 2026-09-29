@@ -1,0 +1,20 @@
+apiVersion: k8s.bitwarden.com/v1
+kind: BitwardenSecret
+metadata:
+  name: admin-panel-proxmox-ssh-bws
+spec:
+  organizationId: "a2b57f3d-6e2b-4467-b499-b31e00bfd804"
+  secretName: admin-panel-proxmox-ssh
+  authToken:
+    secretName: bitwarden-sec
+    secretKey: token
+  map:
+    # Proxmox物理ホスト(host1/host4)のデバイス空きスロット調査(admin-panel#156)が
+    # 使うSSH秘密鍵。対応する公開鍵をProxmox各ホストのauthorized_keysに登録し、
+    # SSHユーザーがrootでない場合はsudo昇格できるようにすること。運用者が有効な鍵を
+    # 設定するまではNOT_CONFIGUREDのままで、スロット調査機能全体が無効化される
+    # (他機能には影響しない)。
+    - bwSecretId: "fcdc9ebf-be29-4f44-a02e-b4d400f96d82" # admin-panel-proxmox-ssh-private-key
+      secretKeyName: private-key
+    - bwSecretId: "315b24ab-db6c-4c5d-9cd8-b4d400f96e24" # admin-panel-proxmox-ssh-sudo-password
+      secretKeyName: sudo-password

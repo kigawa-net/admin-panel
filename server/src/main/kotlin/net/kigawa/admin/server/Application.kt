@@ -720,6 +720,27 @@ fun Application.module() {
             call.respond(fetchSingleHostHwStatus(hostName))
         }
 
+        // Proxmox物理ホストのデバイス空きスロット調査(admin-panel#156)。SSHでホストに
+        // 直接入りdmidecode/lsblkで取得する。認証情報(Bitwarden同期の
+        // admin-panel-proxmox-ssh)未設定の間は503を返すのみで、他機能には影響しない。
+        get("/api/infrastructure/hosts/{host}/slots") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            if (!isProxmoxSshConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Proxmox SSH not configured"))
+                return@get
+            }
+            val hostName = call.parameters["host"]
+            if (hostName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                return@get
+            }
+            call.respond(fetchHostSlotInventory(hostName))
+        }
+
         // インフラのリソース利用量の時系列(物理ホスト=Proxmox rrddata / K8sノード=Prometheus
         // cAdvisor)。グラフ表示用(issue #132)。rangeMinutes は15〜1440(既定60)で、グラフの
         // 描画点を抑えるためトラフィック時系列と同じく最大120点程度に丸める。

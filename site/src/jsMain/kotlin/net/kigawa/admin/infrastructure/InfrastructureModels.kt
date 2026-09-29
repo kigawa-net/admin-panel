@@ -72,6 +72,49 @@ data class InfraHostHwStatus(
     val rootfsUsedBytes: Long? = null
 )
 
+/** PCIeスロット1件分(admin-panel#156)。 */
+@Serializable
+data class PciSlotInfo(
+    val designation: String,
+    val type: String? = null,
+    val width: String? = null,
+    val usage: String? = null,
+    val free: Boolean = false
+)
+
+/** メモリスロット1件分(admin-panel#156)。 */
+@Serializable
+data class MemorySlotInfo(
+    val locator: String,
+    val sizeMb: Long? = null,
+    val memType: String? = null,
+    val speed: String? = null,
+    val free: Boolean = false
+)
+
+@Serializable
+data class DiskBayDisk(
+    val name: String,
+    val sizeBytes: Long? = null,
+    val model: String? = null
+)
+
+@Serializable
+data class DiskBayInfo(
+    val totalBays: Int? = null,
+    val populated: List<DiskBayDisk> = emptyList(),
+    val freeBays: Int? = null
+)
+
+/** ホストの空きスロット調査結果(admin-panel#156)。 */
+@Serializable
+data class HostSlotInventory(
+    val sshReachable: Boolean = true,
+    val pciSlots: List<PciSlotInfo> = emptyList(),
+    val memorySlots: List<MemorySlotInfo> = emptyList(),
+    val diskBays: DiskBayInfo = DiskBayInfo()
+)
+
 /** リソース使用量グラフの1サンプル(issue #132)。 */
 @Serializable
 data class ResourceUsagePoint(

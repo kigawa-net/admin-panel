@@ -124,6 +124,31 @@ spec:
                   name: admin-panel-proxmox-service
                   key: tokenSecret
                   optional: true
+            # インフラ構成画面の物理デバイス空きスロット表示(admin-panel#156)が使う、
+            # Proxmox物理ホスト(host1/host4)へのSSHログイン用設定。dmidecodeはroot権限が
+            # 必要なため、SSHユーザーはroot直ログインかsudo昇格のいずれかにすること。
+            # proxmox-ssh-bws.yaml のBitwardenSecretが自動的にadmin-panel-proxmox-ssh
+            # シークレットへ同期する。未設定の間はスロット調査エンドポイントが503を返す
+            # のみで、他機能には影響しない。
+            - name: PROXMOX_SSH_USER
+              value: "root"
+            - name: PROXMOX_SSH_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-proxmox-ssh
+                  key: private-key
+                  optional: true
+            - name: PROXMOX_SSH_SUDO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-proxmox-ssh
+                  key: sudo-password
+                  optional: true
+            # Proxmoxホスト名→SSH接続先IPのマッピング。Proxmox APIはホストIPを返さない
+            # ため明示的に定義する。総ドライブベイ数は機種依存のため分かる場合のみ定義し、
+            # 未定義のホストは搭載中ディスクの一覧のみ表示する。
+            - name: PROXMOX_SSH_HOSTS
+              value: "host1=192.168.1.10,host4=192.168.1.40"
             # CI向けトークン発行の呼び出し元リポジトリ別許可設定(ci_token_policy)を
             # 管理画面から編集できるようにするための専用MariaDB(admin-panel#64、
             # mariadb-statefulset.yaml/mariadb-db-bws.yaml)。MARIADB_PASSWORDが未設定の

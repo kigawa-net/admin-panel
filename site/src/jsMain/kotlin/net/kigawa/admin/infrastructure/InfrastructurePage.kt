@@ -64,6 +64,7 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     var hostDisks by remember { mutableStateOf<Map<String, List<InfraDisk>>>(emptyMap()) }
     var hostPci by remember { mutableStateOf<Map<String, List<InfraPciDevice>>>(emptyMap()) }
     var hostHw by remember { mutableStateOf<Map<String, InfraHostHwStatus>>(emptyMap()) }
+    var hostSlots by remember { mutableStateOf<Map<String, HostSlotInventory>>(emptyMap()) }
     var completedSections by remember { mutableStateOf<Set<String>>(emptySet()) }
     var servers by remember { mutableStateOf<List<ServerStatus>?>(null) }
     var refreshKey by remember { mutableStateOf(0) }
@@ -132,13 +133,14 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
 
     /** 指定ホストで未完了のカテゴリ集合。HostCard内の区分ごとの読み込み中表示に使う。 */
     fun pendingCategories(hostName: String): Set<String> =
-        setOf("vms", "disks", "pci", "hw").filter { "$hostName/$it" !in completedSections }.toSet()
+        setOf("vms", "disks", "pci", "hw", "slots").filter { "$hostName/$it" !in completedSections }.toSet()
 
     LaunchedEffect(refreshKey) {
         hostVms = emptyMap()
         hostDisks = emptyMap()
         hostPci = emptyMap()
         hostHw = emptyMap()
+        hostSlots = emptyMap()
         completedSections = emptySet()
         servers = null
         val topology = try {
@@ -196,6 +198,15 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                 } catch (e: Throwable) {
                 } finally {
                     markComplete("$hostName/hw")
+                }
+            }
+            launch {
+                try {
+                    hostSlots = hostSlots + (hostName to fetchHostSlots(httpClient, currentAccessToken, hostName))
+                } catch (e: Throwable) {
+                    // 503(SSH未設定)等もここに来る。区分完了扱いにして読み込み中表示だけ外す。
+                } finally {
+                    markComplete("$hostName/slots")
                 }
             }
         }
@@ -374,6 +385,7 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                             host = host,
                             details = mergedDetails(host.name),
                             pendingCategories = pendingCategories(host.name),
+                            slots = hostSlots[host.name],
                             pendingOperations = pendingOperations,
                             httpClient = httpClient,
                             accessToken = accessToken,
@@ -411,8 +423,9 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
 private fun HostCard(
     host: InfraHost,
     details: InfraHostDetails?,
-    /** 未完了のカテゴリ集合("vms"/"disks"/"pci"/"hw")。区分ごとの読み込み中表示に使う。 */
+    /** 未完了のカテゴリ集合("vms"/"disks"/"pci"/"hw"/"slots")。区分ごとの読み込み中表示に使う。 */
     pendingCategories: Set<String>,
+    slots: HostSlotInventory?,
     pendingOperations: Map<String, PendingOperationState>,
     httpClient: HttpClient,
     accessToken: String,
@@ -511,6 +524,14 @@ private fun HostCard(
                     }
                 }
             }
+            if ("slots" in pendingCategories) {
+                SpanText(
+                    "空きスロット情報を読み込み中...",
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            } else if (slots != null) {
+                SlotInventorySection(slots = slots)
+            }
 
             if ("vms" in pendingCategories) {
                 SpanText(
@@ -538,6 +559,41 @@ private fun HostCard(
                     }
                 }
             }
+        }
+    }
+}
+
+/** 空きスロット調査結果の表示(admin-panel#156)。SSH未到達時は注意書きのみ出す。 */
+@Composable
+private fun SlotInventorySection(slots: HostSlotInventory) {
+    Column(modifier = Modifier.padding(top = 4.px), verticalArrangement = Arrangement.spacedBy(2.px)) {
+        SpanText("空きスロット", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
+        if (!slots.sshReachable) {
+            SpanText(
+                "スロット情報を取得できませんでした(SSH未設定またはホスト到達不可)",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
+            return@Column
+        }
+        val pciFree = slots.pciSlots.count { it.free }
+        val memFree = slots.memorySlots.count { it.free }
+        SpanText(
+            "PCIe空き: $pciFree/${slots.pciSlots.size} ・ メモリ空き: $memFree/${slots.memorySlots.size}" +
+                (slots.diskBays.freeBays?.let { " ・ ディスクベイ空き: $it/${slots.diskBays.totalBays}" }
+                    ?: " ・ ディスク搭載: ${slots.diskBays.populated.size}台(総ベイ数未設定)"),
+            modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+        )
+        slots.pciSlots.filter { it.free }.forEach { slot ->
+            SpanText(
+                "空き: ${slot.designation}${slot.type?.let { " ($it)" } ?: ""}",
+                modifier = Modifier.color(Color("#008300")).fontSize(FontSize.Small)
+            )
+        }
+        slots.memorySlots.filter { it.free }.forEach { slot ->
+            SpanText(
+                "空き: ${slot.locator} (メモリ)",
+                modifier = Modifier.color(Color("#008300")).fontSize(FontSize.Small)
+            )
         }
     }
 }

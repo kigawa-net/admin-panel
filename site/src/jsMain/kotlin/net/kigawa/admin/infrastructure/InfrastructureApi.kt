@@ -40,6 +40,13 @@ suspend fun fetchHostHwStatus(client: HttpClient, accessToken: String, hostName:
     }.body()
 }
 
+/** ホストの空きスロット調査結果を取得する(admin-panel#156)。 */
+suspend fun fetchHostSlots(client: HttpClient, accessToken: String, hostName: String): HostSlotInventory {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/hosts/$hostName/slots") {
+        bearerAuth(accessToken)
+    }.body()
+}
+
 /** リソース使用量グラフ用の時系列を取得する(issue #132)。 */
 suspend fun fetchResourceUsage(client: HttpClient, accessToken: String, rangeMinutes: Int): ResourceUsageResponse {
     return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/resource-usage?rangeMinutes=$rangeMinutes") {
