@@ -13,6 +13,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -352,12 +353,33 @@ suspend fun fetchInfrastructureHosts(): InfrastructureTopologyDto {
  * VM一覧・ディスク・PCIデバイスの詳細をホストごとに並列取得する低速パス。
  * fetchInfrastructureHosts()とは別のHTTPクライアント/nodes呼び出しを使うため、こちらが
  * 失敗してもホスト一覧の表示自体には影響しない(該当ホストの詳細が空のまま残るのみ)。
+ *
+ * issue #158「バックエンドが重い」: host4のCPU逼迫時にqemu呼び出しが20秒タイムアウト×
+ * リトライで最大45秒かかり、details全体が60秒近く待たされることが実測されたため、
+ * ホスト詳細の収集全体に25秒の期限を設け、期限切れ時は集まった分だけの部分結果を返す。
+ * また全ホスト分が揃った場合のみ45秒TTLでキャッシュし、ページの再表示や
+ * resource-usage-groupedからの再利用でProxmoxを叩き直さないようにする。
  */
+private const val DETAILS_OVERALL_TIMEOUT_MS = 25_000L
+private const val DETAILS_CACHE_TTL_MS = 45_000L
+
+@Volatile
+private var detailsCache: Pair<Long, InfrastructureDetailsDto>? = null
+
 suspend fun fetchInfrastructureDetails(): InfrastructureDetailsDto {
     val auth = authHeader() ?: return InfrastructureDetailsDto()
 
     // issue #118「インフラ構成ページが重い」の調査用に、実際の所要時間を記録する。
     val start = System.currentTimeMillis()
+
+    // キャッシュヒット(全ホスト分が揃った完全な結果のみ保存している)。
+    detailsCache?.let { (cachedAt, cached) ->
+        if (start - cachedAt < DETAILS_CACHE_TTL_MS) {
+            logger.info("fetchInfrastructureDetails cache hit (age ${start - cachedAt}ms)")
+            return cached
+        }
+    }
+
     val client = buildProxmoxHttpClient()
     try {
         val nodes = try {
@@ -369,12 +391,36 @@ suspend fun fetchInfrastructureDetails(): InfrastructureDetailsDto {
 
         val k8sNodesByName = fetchServerStatuses()?.servers?.associateBy { it.name } ?: emptyMap()
 
-        val hostDetailsList = coroutineScope {
-            nodes.filter { it.status == "online" }.map { node ->
+        val onlineNodes = nodes.filter { it.status == "online" }
+        // supervisorScopeで待つことで、一部ホストの失敗・遅延が他ホストに波及しない。
+        // 全体期限を超えたら完了済みのホスト分だけを部分結果として返し、未完了分は
+        // キャンセルしてProxmoxへの滞留リクエストを解放する。
+        val hostDetailsList = supervisorScope {
+            val deferreds = onlineNodes.map { node ->
                 async {
                     node.node to fetchHostDetails(client, auth, node.node, k8sNodesByName)
                 }
-            }.awaitAll()
+            }
+            val all = withTimeoutOrNull(DETAILS_OVERALL_TIMEOUT_MS) {
+                deferreds.awaitAll()
+            }
+            if (all != null) {
+                all
+            } else {
+                val partial = deferreds.mapNotNull { deferred ->
+                    try {
+                        if (deferred.isCompleted) deferred.await() else null
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                logger.warn(
+                    "fetchInfrastructureDetails partial result: ${partial.size}/${deferreds.size} hosts " +
+                        "(overall timeout ${DETAILS_OVERALL_TIMEOUT_MS}ms)"
+                )
+                deferreds.filter { !it.isCompleted }.forEach { it.cancel() }
+                partial
+            }
         }
 
         val matchedNodeNames = hostDetailsList
@@ -383,7 +429,12 @@ suspend fun fetchInfrastructureDetails(): InfrastructureDetailsDto {
             .toSet()
         val standaloneNodes = k8sNodesByName.values.filter { it.name !in matchedNodeNames }.sortedBy { it.name }
 
-        return InfrastructureDetailsDto(hostDetails = hostDetailsList.toMap(), standaloneNodes = standaloneNodes)
+        val result = InfrastructureDetailsDto(hostDetails = hostDetailsList.toMap(), standaloneNodes = standaloneNodes)
+        // 部分結果はキャッシュしない(劣化した表示がTTL中固定化されるのを避ける)。
+        if (hostDetailsList.size == onlineNodes.size) {
+            detailsCache = System.currentTimeMillis() to result
+        }
+        return result
     } finally {
         client.close()
         logger.info("fetchInfrastructureDetails took ${System.currentTimeMillis() - start}ms")
@@ -480,14 +531,17 @@ private suspend fun fetchHostDetails(
     }
 
     // ディスク型番・搭載PCIデバイスは変化の少ない付随情報のため、あえてリトライなし・
-    // 単発タイムアウト(20秒)のみとし、失敗時は空リストにフォールバックする。
+    // 短いタイムアウト(10秒)のみとし、失敗時は空リストにフォールバックする(issue #158)。
+    // クライアント側のHttpTimeout(20秒)をそのまま使うと、低速時にホスト詳細全体の
+    // 足を引っ張る主因になる。
     val disksDeferred = async {
         try {
-            client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/disks/list") {
-                header("Authorization", auth)
-            }.body<ProxmoxEnvelope<List<ProxmoxDiskDto>>>().data
-                .filter { it.model != null && it.devpath != null }
-                .map { disk ->
+            withTimeoutOrNull(10_000) {
+                client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/disks/list") {
+                    header("Authorization", auth)
+                }.body<ProxmoxEnvelope<List<ProxmoxDiskDto>>>().data
+            }?.filter { it.model != null && it.devpath != null }
+                ?.map { disk ->
                     InfraDiskDto(
                         devpath = disk.devpath!!,
                         model = disk.model!!,
@@ -495,7 +549,7 @@ private suspend fun fetchHostDetails(
                         sizeBytes = disk.size,
                         health = disk.health
                     )
-                }
+                } ?: emptyList()
         } catch (e: Exception) {
             logger.warn("Proxmox disks fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}")
             emptyList()
@@ -504,20 +558,20 @@ private suspend fun fetchHostDetails(
 
     val pciDeferred = async {
         try {
-            client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/hardware/pci") {
-                header("Authorization", auth)
-            }.body<ProxmoxEnvelope<List<ProxmoxPciDeviceDto>>>().data
+            withTimeoutOrNull(10_000) {
+                client.get("$proxmoxApiUrl/api2/json/nodes/$nodeName/hardware/pci") {
+                    header("Authorization", auth)
+                }.body<ProxmoxEnvelope<List<ProxmoxPciDeviceDto>>>().data
+            }?.filter { device ->
                 // チップセット内蔵のUSB/SMBus/Thermal等のコントローラは大量にあり
                 // 有用でないため、ネットワーク(0x02)・ストレージ(0x0108のNVMe含む)・
                 // ディスプレイ(0x03)クラスのデバイスのみに絞り込む。
-                .filter { device ->
-                    val cls = device.pciClass?.removePrefix("0x") ?: return@filter false
-                    cls.startsWith("02") || cls.startsWith("03") || cls.startsWith("0108")
-                }
-                .mapNotNull { device ->
-                    val name = device.deviceName ?: return@mapNotNull null
-                    InfraPciDeviceDto(name = name, vendor = device.vendorName, pciClass = device.pciClass)
-                }
+                val cls = device.pciClass?.removePrefix("0x") ?: return@filter false
+                cls.startsWith("02") || cls.startsWith("03") || cls.startsWith("0108")
+            }?.mapNotNull { device ->
+                val name = device.deviceName ?: return@mapNotNull null
+                InfraPciDeviceDto(name = name, vendor = device.vendorName, pciClass = device.pciClass)
+            } ?: emptyList()
         } catch (e: Exception) {
             logger.warn("Proxmox PCI fetch failed for node $nodeName: ${e::class.qualifiedName}: ${e.message}")
             emptyList()
