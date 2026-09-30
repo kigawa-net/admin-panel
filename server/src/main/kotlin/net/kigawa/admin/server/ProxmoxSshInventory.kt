@@ -352,10 +352,23 @@ internal suspend fun fetchSlotInventoryViaSsh(
                     null
                 }
                 val populated = parseLsblkJson(lsblkOut)
+                val pciSlots = parseDmidecodeSlots(slotsOut)
+                val memSlots = parseDmidecodeMemory(memOut)
+                if (memSlots.isEmpty() && memOut.isNotBlank()) {
+                    // 内容自体(シリアル番号等が含まれる)は出さず、構造の手がかりだけ記録する
+                    logger.warn(
+                        "memory parse empty for $label: bytes=${memOut.length} " +
+                            "lines=${memOut.lines().size} " +
+                            "hasMemoryDevice=${memOut.contains("Memory Device")} " +
+                            "hasHandle=${memOut.contains("Handle ")} " +
+                            "hasCrlf=${memOut.contains("\r\n")} " +
+                            "hasCr=${memOut.contains("\r")}"
+                    )
+                }
                 HostSlotInventoryDto(
                     sshReachable = true,
-                    pciSlots = parseDmidecodeSlots(slotsOut),
-                    memorySlots = parseDmidecodeMemory(memOut),
+                    pciSlots = pciSlots,
+                    memorySlots = memSlots,
                     diskBays = DiskBayInfo(
                         totalBays = totalBays,
                         populated = populated,
