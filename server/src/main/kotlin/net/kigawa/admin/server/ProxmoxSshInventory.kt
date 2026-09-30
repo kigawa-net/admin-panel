@@ -271,7 +271,12 @@ internal fun isVirtualProductName(name: String): Boolean {
         "openstack",
         "bochs",
         "bhyve",
-        "parallels"
+        "parallels",
+        // QEMU系の定番プロダクト名。ManufacturerではなくProduct名に出る。
+        "i440fx",
+        "standard pc",
+        "q35",
+        "ich9"
     ).any { lower.contains(it) }
 }
 
@@ -303,7 +308,15 @@ private fun execSshCommand(client: SSHClient, command: String, sudoPassword: Str
         cmd.join(SSH_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         val output = cmd.inputStream.bufferedReader().readText()
         val exitStatus = cmd.exitStatus
-        if (exitStatus != null && exitStatus != 0) {
+        // exitStatusが取れない(joinタイムアウト等)場合は成功とみなさず失敗扱いにする。
+        // 不完全な出力を正常としてパースすると、空リスト等の欠けた結果を正常らしく
+        // 返してしまい、原因切り分けが困難になる。
+        if (exitStatus == null) {
+            throw IOException("command exit status unknown (timed out?): $command")
+        }
+        // 診断用にコマンド単位の結果を記録する(出力本文はログに出さない)。
+        logger.info("ssh command done: $command exit=$exitStatus bytes=${output.length}")
+        if (exitStatus != 0) {
             val error = cmd.errorStream.bufferedReader().readText().trim().take(300)
             throw IOException("command failed (exit $exitStatus): $command${if (error.isNotBlank()) ": $error" else ""}")
         }
