@@ -452,6 +452,17 @@ private val pseudoFsSources = setOf("tmpfs", "devtmpfs", "udev", "overlay", "squ
 /** df -x 非対応環境向けの保険として、実使用率に意味を持たない疑似FSのマウントポイント群。 */
 private val pseudoFsMountPoints = listOf("/proc", "/sys", "/snap")
 
+/**
+ * kubeletのPodボリューム(PVC)マウントのディレクトリ(admin-panel#148品質修正)。
+ *
+ * K8sノードではPod数・PVC数に比例して `/var/lib/kubelet/pods/<uid>/volumes/...` と
+ * `/var/lib/kubelet/pods/<uid>/containers/...` のマウントが数十件並び(本番実測:
+ * worker3で54件中の大半)、フロントの「最大3件+他N件」表示がPVCで埋まってしまう。
+ * これらはPod側の使用量であってノード自身の使用状況ではないため除外し、
+ * ノード本体(`/` `/boot` `/home` 等)やProxmoxホストの `/var/lib/vz` が見えるようにする。
+ */
+private const val KUBELET_PODS_MOUNT_DIR = "/var/lib/kubelet/pods"
+
 private const val DISK_USAGE_OVERALL_TIMEOUT_MS = 30_000L
 
 /**
@@ -479,8 +490,12 @@ internal fun parseDfUsage(output: String): List<DiskUsageDto> {
         val mountPoint = columns.drop(5).joinToString(" ").trim()
         if (mountPoint.isEmpty() || sizeBytes <= 0) continue
         // df -x が効かない環境での保険(上のコマンドコメント参照)
+        // overlay/squashfs はDF_COMMANDの -x に加え、ここでもSource列で落とす
         if (columns[0] in pseudoFsSources) continue
         if (pseudoFsMountPoints.any { mountPoint == it || mountPoint.startsWith("$it/") }) continue
+        // kubeletのPodボリューム(PVC)/コンテナログのマウントはK8sノードで大量に出るため
+        // 除外する(ノード自身の使用状況が見えなくなるのを防ぐ。定数コメント参照)
+        if (mountPoint == KUBELET_PODS_MOUNT_DIR || mountPoint.startsWith("$KUBELET_PODS_MOUNT_DIR/")) continue
         if (!seenMountPoints.add(mountPoint)) continue
         if (!seenSources.add(columns[0])) continue
         result.add(

@@ -249,6 +249,42 @@ df: /mnt/broken: Permission denied
         assertTrue(parseDfUsage("Filesystem 1-blocks Used Available Capacity Mounted on").isEmpty())
     }
 
+    private val dfKubeletSample = """
+Filesystem     1B-blocks      Used Available Capacity Mounted on
+/dev/dm-0    41152817152 8123456789 30942940963      21% /
+/dev/nvme0n1p1  104857600  10485760  94371840      10% /boot
+/dev/nvme0n1p2  104857600  10485760  94371840      10% /boot/efi
+/dev/dm-1    500102443008 100000000 399102443       1% /home
+/dev/sda1    107374182400 53687091200 53687091200      50% /var/lib/vz
+/dev/sdb      10737418240 1073741824 9663676416      10% /var/lib/kubelet/pods/2f6d1d3e-1111-2222-3333-444455556666/volumes/kubernetes.io~empty-dir/vol
+/dev/sdb      10737418240 1073741824 9663676416      10% /var/lib/kubelet/pods/2f6d1d3e-1111-2222-3333-444455556666/volumes/kubernetes.io~csi/pvc-abc
+/dev/sdc      10737418240 1073741824 9663676416      10% /var/lib/kubelet/pods/2f6d1d3e-1111-2222-3333-444455556666/containers/app
+/dev/sdd      10737418240 1073741824 9663676416      10% /var/lib/kubelet/pods
+""".trimIndent()
+
+    @Test
+    fun `drops kubelet pod volume mounts but keeps node and host mounts`() {
+        // 本番実測(worker3: 54件中の大半がkubelet pods配下)の再現フィクスチャ。
+        // PVC/コンテナログのマウントはPod側の使用量でありノード自身の使用状況ではない
+        // ため、/ /boot /boot/efi /home /var/lib/vz だけが残る。
+        val usages = parseDfUsage(dfKubeletSample)
+        assertEquals(
+            listOf("/", "/boot", "/boot/efi", "/home", "/var/lib/vz"),
+            usages.map { it.mountpoint }
+        )
+        // 重要マウントの数値が落ちていないこと
+        val vz = usages.first { it.mountpoint == "/var/lib/vz" }
+        assertEquals(107374182400L, vz.sizeBytes)
+        assertEquals(50, vz.percent)
+
+        // kubelet配下だけの出力なら空リスト(呼び出し側はグレースフルに扱える)
+        val kubeletOnly = dfKubeletSample.lines().filterNot {
+            it.startsWith("/dev/dm-0") || it.startsWith("/dev/nvme0") ||
+                it.startsWith("/dev/dm-1") || it.startsWith("/dev/sda1")
+        }.joinToString("\n")
+        assertTrue(parseDfUsage(kubeletOnly).isEmpty())
+    }
+
     @Test
     fun `parses real worker3 dmidecode memory output`() {
         // worker3実機のdmidecode 3.5出力(92バイト拡張レコード)。本番で空になった回帰検証用。
