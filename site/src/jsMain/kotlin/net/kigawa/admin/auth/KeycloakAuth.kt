@@ -10,6 +10,7 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.browser.localStorage
 import kotlinx.browser.window
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,6 +33,9 @@ import kotlin.js.Promise
  * Keycloakの単一レルム(manage)での認証を扱う。
  * 以前は管理用realm(manage)とpublic用realm(kigawa-net)の2つがあったが、
  * issue #133で単一レルムに統合した。アクセス制御の境界はサーバー側(RBAC)で行う。
+ *
+ * issue #169でGoogle式アカウント切替えに対応し、複数ユーザーのセッションを
+ * 同時保持できる。アカウントIDはuserinfoのsubを用いる。
  */
 @Serializable
 data class TokenResponse(
@@ -51,6 +55,25 @@ data class UserInfoResponse(
     @SerialName("name") val name: String? = null
 )
 
+/** アカウント切替えメニューの表示用。idはuserinfoのsub(レガシー移行直後は仮ID)。 */
+data class AccountInfo(val id: String, val username: String)
+
+/** localStorageのkc_accountsにJSONとして保存する全アカウントのセッション束。 */
+@Serializable
+private data class AccountStore(
+    val accounts: Map<String, StoredAccount> = emptyMap()
+)
+
+/** AccountStoreに格納する1アカウント分のセッション。 */
+@Serializable
+private data class StoredAccount(
+    val username: String,
+    val accessToken: String,
+    val refreshToken: String? = null,
+    val idToken: String? = null,
+    val expiresAt: Long = 0L
+)
+
 object KeycloakConfig {
     val serverUrl: String = js("window.__KEYCLOAK_URL__ || 'https://user.kigawa.net'") as String
     val clientId: String = js("window.__KEYCLOAK_CLIENT_ID__ || 'admin-panel'") as String
@@ -65,22 +88,44 @@ object KeycloakConfig {
 sealed class AuthState {
     object Unauthenticated : AuthState()
     object Loading : AuthState()
-    data class Authenticated(val username: String, val accessToken: String) : AuthState()
+    data class Authenticated(
+        val username: String,
+        val accessToken: String,
+        val accountId: String,
+        val accounts: List<AccountInfo> = emptyList()
+    ) : AuthState()
+
     data class Error(val message: String) : AuthState()
 }
 
 private const val KEY_CODE_VERIFIER = "kc_code_verifier"
 private const val KEY_STATE = "kc_state"
+
+/** 複数アカウントのセッション本体(id -> StoredAccountのJSONマップ)。 */
+private const val KEY_ACCOUNTS = "kc_accounts"
+
+/** 現在有効なアカウントのID。 */
+private const val KEY_ACTIVE_ACCOUNT = "kc_active_account"
+
+// 以下は単一セッション時代の旧キー。初回init時に新形式へ移行して削除する。
 private const val KEY_ACCESS_TOKEN = "kc_access_token"
 private const val KEY_ID_TOKEN = "kc_id_token"
 private const val KEY_REFRESH_TOKEN = "kc_refresh_token"
 private const val KEY_EXPIRES_AT = "kc_expires_at"
 private const val KEY_USERNAME = "kc_username"
 
+/** レガシー移行で使う仮IDの接頭辞。正規のsubが分かるまで使う。 */
+private const val LEGACY_ID_PREFIX = "legacy-"
+
 /** Refresh this long before actual expiry, to allow for request latency and clock skew. */
 private const val REFRESH_MARGIN_MS = 30_000L
 
 private fun nowMillis(): Long = (js("Date.now()") as Double).toLong()
+
+private val accountsJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+}
 
 private fun generateRandom(length: Int): String {
     val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
@@ -106,6 +151,12 @@ private suspend fun sha256Base64Url(input: String): String {
         .trimEnd('=')
 }
 
+private fun displayNameOf(userInfo: UserInfoResponse): String =
+    userInfo.name
+        ?: userInfo.preferredUsername
+        ?: userInfo.email
+        ?: "User"
+
 class KeycloakAuthProvider : AutoCloseable {
     private val _authState = MutableStateFlow<AuthState>(AuthState.Unauthenticated)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
@@ -127,11 +178,113 @@ class KeycloakAuthProvider : AutoCloseable {
     }
 
     fun init() {
-        val token = localStorage[KEY_ACCESS_TOKEN]
-        val username = localStorage[KEY_USERNAME]
-        if (token != null && username != null) {
-            _authState.value = AuthState.Authenticated(username = username, accessToken = token)
-            scheduleAutoRefresh()
+        migrateLegacyIfNeeded()
+        val accounts = loadAccounts()
+        if (accounts.isEmpty()) {
+            _authState.value = AuthState.Unauthenticated
+            return
+        }
+        if (localStorage[KEY_ACTIVE_ACCOUNT] == null) {
+            localStorage[KEY_ACTIVE_ACCOUNT] = accounts.keys.first()
+        }
+        emitActiveOrUnauthenticated()
+        scheduleAutoRefresh()
+    }
+
+    /**
+     * 単一セッション時代の旧キーが残っていれば新形式(kc_accounts/kc_active_account)へ移行する。
+     * 移行時点ではuserinfo取得が同期でできないため、正規のsubではなく
+     * 仮ID(legacy-<username>)で保存し、次回リフレッシュ/再ログインで正規subに正規化する。
+     */
+    private fun migrateLegacyIfNeeded() {
+        try {
+            if (localStorage[KEY_ACCOUNTS] != null) return
+            val token = localStorage[KEY_ACCESS_TOKEN] ?: return
+            val username = localStorage[KEY_USERNAME] ?: return
+            val legacyId = "$LEGACY_ID_PREFIX$username"
+            val accounts = mutableMapOf(
+                legacyId to StoredAccount(
+                    username = username,
+                    accessToken = token,
+                    refreshToken = localStorage[KEY_REFRESH_TOKEN],
+                    idToken = localStorage[KEY_ID_TOKEN],
+                    expiresAt = localStorage[KEY_EXPIRES_AT]?.toLongOrNull() ?: 0L
+                )
+            )
+            saveAccounts(accounts)
+            localStorage[KEY_ACTIVE_ACCOUNT] = legacyId
+            // 旧キーを削除し、二重管理にしない
+            localStorage.removeItem(KEY_ACCESS_TOKEN)
+            localStorage.removeItem(KEY_ID_TOKEN)
+            localStorage.removeItem(KEY_REFRESH_TOKEN)
+            localStorage.removeItem(KEY_EXPIRES_AT)
+            localStorage.removeItem(KEY_USERNAME)
+        } catch (e: Throwable) {
+            // 移行失敗時は旧キーを残し、次回init時に再試行する
+        }
+    }
+
+    /** localStorageから全アカウントを読み出す。破損時は空扱いにする。 */
+    private fun loadAccounts(): MutableMap<String, StoredAccount> {
+        val raw = try {
+            localStorage[KEY_ACCOUNTS]
+        } catch (e: Throwable) {
+            // localStorage自体が使えない(プライベートモード等)場合は空扱い
+            return mutableMapOf()
+        } ?: return mutableMapOf()
+        return try {
+            accountsJson.decodeFromString(AccountStore.serializer(), raw).accounts.toMutableMap()
+        } catch (e: Throwable) {
+            // 保存形式の破損で描画クラッシュさせないため、空扱いにする
+            mutableMapOf()
+        }
+    }
+
+    private fun saveAccounts(accounts: Map<String, StoredAccount>) {
+        try {
+            if (accounts.isEmpty()) {
+                localStorage.removeItem(KEY_ACCOUNTS)
+            } else {
+                localStorage[KEY_ACCOUNTS] = accountsJson.encodeToString(AccountStore.serializer(), AccountStore(accounts))
+            }
+        } catch (e: Throwable) {
+            // 保存失敗時は次回読み出しで空扱いになる。描画クラッシュはさせない。
+        }
+    }
+
+    /** 有効アカウントの状態を流す。指定が壊れていれば先頭を有効化し、空なら未認証にする。 */
+    private fun emitActiveOrUnauthenticated() {
+        val accounts = loadAccounts()
+        var activeId = try {
+            localStorage[KEY_ACTIVE_ACCOUNT]
+        } catch (e: Throwable) {
+            null
+        }
+        var active = if (activeId != null) accounts[activeId] else null
+        if (active == null && accounts.isNotEmpty()) {
+            // 有効アカウント指定が壊れている場合は先頭を有効化する
+            activeId = accounts.keys.first()
+            active = accounts[activeId]
+            try {
+                localStorage[KEY_ACTIVE_ACCOUNT] = activeId as String
+            } catch (e: Throwable) {
+                // 保存失敗時は今回の表示だけ有効化する
+            }
+        }
+        if (active != null && activeId != null) {
+            _authState.value = AuthState.Authenticated(
+                username = active.username,
+                accessToken = active.accessToken,
+                accountId = activeId,
+                accounts = accounts.map { (id, account) -> AccountInfo(id, account.username) }
+            )
+        } else {
+            try {
+                localStorage.removeItem(KEY_ACTIVE_ACCOUNT)
+            } catch (e: Throwable) {
+                // 無視
+            }
+            _authState.value = AuthState.Unauthenticated
         }
     }
 
@@ -140,44 +293,73 @@ class KeycloakAuthProvider : AutoCloseable {
      * remains valid, since Keycloak access tokens are short-lived (commonly ~5 minutes) and this
      * app has no other mechanism to renew them. Each page navigation creates a fresh provider
      * (and thus a fresh loop), so this only needs to cover a single page's lifetime.
+     * 複数アカウントのうち、有効なアカウントのみをリフレッシュ対象とする。
      */
     private fun scheduleAutoRefresh() {
         refreshJob?.cancel()
         refreshJob = scope.launch {
             while (true) {
-                val expiresAt = localStorage[KEY_EXPIRES_AT]?.toLongOrNull()
-                val delayMs = if (expiresAt != null) {
+                val activeId = try {
+                    localStorage[KEY_ACTIVE_ACCOUNT]
+                } catch (e: Throwable) {
+                    null
+                } ?: break
+                val expiresAt = loadAccounts()[activeId]?.expiresAt
+                val delayMs = if (expiresAt != null && expiresAt > 0) {
                     (expiresAt - nowMillis() - REFRESH_MARGIN_MS).coerceAtLeast(0L)
                 } else {
                     0L
                 }
                 delay(delayMs)
-                if (!refreshAccessToken()) {
-                    handleRefreshFailure()
-                    break
+                if (!refreshActiveAccount()) {
+                    if (!handleRefreshFailure()) break
                 }
             }
         }
     }
 
-    /** Refresh token expired or was revoked: the stored access token can now never become valid
-     * again on its own, so clear it and prompt the user to sign in again instead of leaving every
-     * subsequent API call to silently fail with 401. */
-    private fun handleRefreshFailure() {
-        localStorage.removeItem(KEY_ACCESS_TOKEN)
-        localStorage.removeItem(KEY_ID_TOKEN)
-        localStorage.removeItem(KEY_REFRESH_TOKEN)
-        localStorage.removeItem(KEY_EXPIRES_AT)
-        localStorage.removeItem(KEY_USERNAME)
+    /** 有効アカウントのリフレッシュに失敗したら、そのアカウントだけを破棄する。
+     * 他のアカウントが残っていれば次を有効化して継続(true)し、
+     * なければ再ログインを促す(falseでループ終了)。 */
+    private fun handleRefreshFailure(): Boolean {
+        val accounts = loadAccounts()
+        val failedId = try {
+            localStorage[KEY_ACTIVE_ACCOUNT]
+        } catch (e: Throwable) {
+            null
+        }
+        if (failedId != null) accounts.remove(failedId)
+        saveAccounts(accounts)
+        if (accounts.isNotEmpty()) {
+            try {
+                localStorage[KEY_ACTIVE_ACCOUNT] = accounts.keys.first()
+            } catch (e: Throwable) {
+                // 保存失敗時は今回の表示だけ有効化する
+            }
+            emitActiveOrUnauthenticated()
+            return true
+        }
+        try {
+            localStorage.removeItem(KEY_ACTIVE_ACCOUNT)
+        } catch (e: Throwable) {
+            // 無視
+        }
         _authState.value = AuthState.Error("セッションの有効期限が切れました。再度ログインしてください。")
+        return false
     }
 
     /** Exchanges the stored refresh token for a new access token. Returns false if that fails
      * (refresh token expired/revoked), leaving the current, likely-now-stale access token in
      * place until the user next has to log in again. */
-    private suspend fun refreshAccessToken(): Boolean {
-        val refreshToken = localStorage[KEY_REFRESH_TOKEN] ?: return false
-        return try {
+    private suspend fun refreshActiveAccount(): Boolean {
+        val activeId = try {
+            localStorage[KEY_ACTIVE_ACCOUNT]
+        } catch (e: Throwable) {
+            null
+        } ?: return false
+        val account = loadAccounts()[activeId] ?: return false
+        val refreshToken = account.refreshToken ?: return false
+        try {
             val tokenResponse = httpClient.submitForm(
                 url = KeycloakConfig.tokenUrl(),
                 formParameters = parameters {
@@ -187,32 +369,66 @@ class KeycloakAuthProvider : AutoCloseable {
                 }
             ).body<TokenResponse>()
 
-            persistTokens(tokenResponse)
-
-            val current = _authState.value
-            if (current is AuthState.Authenticated) {
-                _authState.value = current.copy(accessToken = tokenResponse.accessToken)
+            // 処理中に切替え/削除が起きていたら、古い結果で上書きしない
+            val currentActiveId = try {
+                localStorage[KEY_ACTIVE_ACCOUNT]
+            } catch (e: Throwable) {
+                null
             }
-            true
-        } catch (e: Exception) {
-            false
+            if (currentActiveId != activeId) return true
+
+            var updated = account.copy(
+                accessToken = tokenResponse.accessToken,
+                refreshToken = tokenResponse.refreshToken ?: account.refreshToken,
+                idToken = tokenResponse.idToken ?: account.idToken,
+                expiresAt = nowMillis() + tokenResponse.expiresIn * 1000L
+            )
+            // レガシー仮ID(legacy-*)の正規化: リフレッシュ成功時にuserinfoから
+            // 正規subを取得できれば、仮IDを置き換える
+            var nextActiveId = activeId
+            if (activeId.startsWith(LEGACY_ID_PREFIX)) {
+                try {
+                    val userInfo = httpClient.get(KeycloakConfig.userInfoUrl()) {
+                        bearerAuth(tokenResponse.accessToken)
+                    }.body<UserInfoResponse>()
+                    nextActiveId = userInfo.sub
+                    updated = updated.copy(username = displayNameOf(userInfo))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    // ktor-client-jsがブラウザのfetch()失敗時にExceptionをすり抜けて
+                    // 投げる場合があるためThrowableで受ける(既存の描画クラッシュ対策と同様)。
+                    // userinfo取得に失敗しても、トークン更新自体は有効なので継続する。
+                }
+            }
+
+            val next = loadAccounts()
+            next.remove(activeId)
+            next[nextActiveId] = updated
+            saveAccounts(next)
+            try {
+                localStorage[KEY_ACTIVE_ACCOUNT] = nextActiveId
+            } catch (e: Throwable) {
+                // 保存失敗時は今回の表示だけ有効化する
+            }
+            emitActiveOrUnauthenticated()
+            return true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // ktor-client-jsがブラウザのfetch()失敗時にExceptionをすり抜けて
+            // 投げる場合があるためThrowableで受ける(既存の描画クラッシュ対策と同様)。
+            return false
         }
     }
 
-    private fun persistTokens(tokenResponse: TokenResponse) {
-        localStorage[KEY_ACCESS_TOKEN] = tokenResponse.accessToken
-        localStorage[KEY_EXPIRES_AT] = (nowMillis() + tokenResponse.expiresIn * 1000L).toString()
-        if (tokenResponse.refreshToken != null) {
-            localStorage[KEY_REFRESH_TOKEN] = tokenResponse.refreshToken
-        }
-        if (tokenResponse.idToken != null) {
-            localStorage[KEY_ID_TOKEN] = tokenResponse.idToken
-        } else {
-            localStorage.removeItem(KEY_ID_TOKEN)
-        }
-    }
-
-    suspend fun startLogin() {
+    /**
+     * ログイン開始。既存セッションを消さないため、そのまま「別のアカウントを追加」
+     * としても使える。コールバック側(handleCallback)でupsert+有効化する。
+     * forceLogin=trueの場合は認可URLにprompt=loginを付与し、KeycloakのSSOによる
+     * 無言ログインを抑止して別ユーザーでの再認証を強制する。
+     */
+    suspend fun startLogin(forceLogin: Boolean = false) {
         val codeVerifier = generateRandom(128)
         val state = generateRandom(32)
         val codeChallenge = sha256Base64Url(codeVerifier)
@@ -234,10 +450,15 @@ class KeycloakAuthProvider : AutoCloseable {
         params.set("state", state)
         params.set("code_challenge", codeChallenge)
         params.set("code_challenge_method", "S256")
+        if (forceLogin) params.set("prompt", "login")
 
         window.location.href = "${KeycloakConfig.authUrl()}?$params"
     }
 
+    /**
+     * コールバックで受けた認可コードをトークンに交換し、アカウント一覧へupsertして有効化する。
+     * 同一subでの再ログインは置換され、アカウントが増殖しない。
+     */
     suspend fun handleCallback(code: String, state: String) {
         _authState.value = AuthState.Loading
 
@@ -273,33 +494,112 @@ class KeycloakAuthProvider : AutoCloseable {
                 bearerAuth(tokenResponse.accessToken)
             }.body<UserInfoResponse>()
 
-            val displayName = userInfo.name
-                ?: userInfo.preferredUsername
-                ?: userInfo.email
-                ?: "User"
+            val displayName = displayNameOf(userInfo)
+            val accountId = userInfo.sub
 
-            persistTokens(tokenResponse)
-            localStorage[KEY_USERNAME] = displayName
-
-            _authState.value = AuthState.Authenticated(
+            val accounts = loadAccounts()
+            accounts[accountId] = StoredAccount(
                 username = displayName,
-                accessToken = tokenResponse.accessToken
+                accessToken = tokenResponse.accessToken,
+                refreshToken = tokenResponse.refreshToken ?: accounts[accountId]?.refreshToken,
+                idToken = tokenResponse.idToken,
+                expiresAt = nowMillis() + tokenResponse.expiresIn * 1000L
             )
+            // 同一ユーザーのレガシー仮IDが残っていれば掃除する(別ユーザーの仮IDは残す)
+            val legacyId = "$LEGACY_ID_PREFIX$displayName"
+            if (legacyId != accountId) accounts.remove(legacyId)
+            saveAccounts(accounts)
+            try {
+                localStorage[KEY_ACTIVE_ACCOUNT] = accountId
+            } catch (e: Throwable) {
+                // 保存失敗時は今回の表示だけ有効化する
+            }
+
+            emitActiveOrUnauthenticated()
 
             window.location.href = "/"
-        } catch (e: Exception) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // ktor-client-jsがブラウザのfetch()失敗時にExceptionをすり抜けて
+            // 投げる場合があるためThrowableで受ける(既存の描画クラッシュ対策と同様)。
             _authState.value = AuthState.Error(e.message ?: "Authentication failed")
         }
     }
 
-    fun logout() {
-        val idToken = localStorage[KEY_ID_TOKEN]
+    /** 既存アカウントへの切替え。存在しないIDなら何もしない。 */
+    fun switchAccount(id: String) {
+        try {
+            val accounts = loadAccounts()
+            if (!accounts.containsKey(id)) return
+            localStorage[KEY_ACTIVE_ACCOUNT] = id
+            emitActiveOrUnauthenticated()
+            scheduleAutoRefresh()
+        } catch (e: Throwable) {
+            // 切替え失敗時は現状維持し、描画クラッシュさせない
+        }
+    }
+
+    /** ローカルからの削除のみ(Keycloak側のセッションには触れない)。
+     * 有効アカウントを消した場合は残りの先頭を有効化し、空になれば未認証にする。 */
+    fun removeAccount(id: String) {
+        try {
+            val accounts = loadAccounts()
+            if (!accounts.containsKey(id)) return
+            accounts.remove(id)
+            if (accounts.isEmpty()) {
+                localStorage.removeItem(KEY_ACCOUNTS)
+                localStorage.removeItem(KEY_ACTIVE_ACCOUNT)
+                refreshJob?.cancel()
+                _authState.value = AuthState.Unauthenticated
+                return
+            }
+            saveAccounts(accounts)
+            val currentActiveId = try {
+                localStorage[KEY_ACTIVE_ACCOUNT]
+            } catch (e: Throwable) {
+                null
+            }
+            if (currentActiveId == id || currentActiveId == null) {
+                try {
+                    localStorage[KEY_ACTIVE_ACCOUNT] = accounts.keys.first()
+                } catch (e: Throwable) {
+                    // 保存失敗時は今回の表示だけ有効化する
+                }
+            }
+            emitActiveOrUnauthenticated()
+            scheduleAutoRefresh()
+        } catch (e: Throwable) {
+            // 削除失敗時は現状維持し、描画クラッシュさせない
+        }
+    }
+
+    /** 全アカウントの削除+Keycloakリダイレクト(従来logoutと同等)。 */
+    fun logoutAll() {
+        val activeId = try {
+            localStorage[KEY_ACTIVE_ACCOUNT]
+        } catch (e: Throwable) {
+            null
+        }
+        val idToken = try {
+            if (activeId != null) loadAccounts()[activeId]?.idToken else null
+        } catch (e: Throwable) {
+            null
+        }
         refreshJob?.cancel()
-        localStorage.removeItem(KEY_ACCESS_TOKEN)
-        localStorage.removeItem(KEY_ID_TOKEN)
-        localStorage.removeItem(KEY_REFRESH_TOKEN)
-        localStorage.removeItem(KEY_EXPIRES_AT)
-        localStorage.removeItem(KEY_USERNAME)
+        // 新キー群
+        try {
+            localStorage.removeItem(KEY_ACCOUNTS)
+            localStorage.removeItem(KEY_ACTIVE_ACCOUNT)
+            // 旧単一キー群(移行漏れ対策)
+            localStorage.removeItem(KEY_ACCESS_TOKEN)
+            localStorage.removeItem(KEY_ID_TOKEN)
+            localStorage.removeItem(KEY_REFRESH_TOKEN)
+            localStorage.removeItem(KEY_EXPIRES_AT)
+            localStorage.removeItem(KEY_USERNAME)
+        } catch (e: Throwable) {
+            // 無視
+        }
         _authState.value = AuthState.Unauthenticated
 
         val params = URLSearchParams()
@@ -309,6 +609,9 @@ class KeycloakAuthProvider : AutoCloseable {
 
         window.location.href = "${KeycloakConfig.logoutUrl()}?$params"
     }
+
+    /** 従来の単一ログアウト。現在は全アカウント削除(logoutAll)と同義。 */
+    fun logout() = logoutAll()
 
     override fun close() {
         refreshJob?.cancel()

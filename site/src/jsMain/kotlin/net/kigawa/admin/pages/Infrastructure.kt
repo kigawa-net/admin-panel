@@ -16,7 +16,7 @@ import net.kigawa.admin.layout.AppShell
 @Composable
 fun InfrastructureRoute() {
     val ctx = rememberPageContext()
-    AuthGuard(requireAdmin = true) { state, _ ->
+    AuthGuard(requireAdmin = true) { state, _, provider ->
         var currentOrgId by remember { mutableStateOf<String?>(localStorage.getItem("selectedOrgId")) }
         val onOrgChange: (String?) -> Unit = { orgId ->
             currentOrgId = orgId
@@ -30,7 +30,8 @@ fun InfrastructureRoute() {
             isAdmin = true,
             accessToken = state.accessToken,
             currentOrgId = currentOrgId,
-            onOrgChange = onOrgChange
+            onOrgChange = onOrgChange,
+            authProvider = provider
         ) {
             InfrastructurePage(
                 accessToken = state.accessToken,

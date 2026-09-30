@@ -16,7 +16,7 @@ import net.kigawa.admin.organizations.OrganizationPage
 @Composable
 fun OrganizationsRoute() {
     val ctx = rememberPageContext()
-    AuthGuard(requireAdmin = true) { state, _ ->
+    AuthGuard(requireAdmin = true) { state, _, provider ->
         // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い
         var currentOrgId by remember { mutableStateOf<String?>(localStorage.getItem("selectedOrgId")) }
         val onOrgChange: (String?) -> Unit = { orgId ->
@@ -31,7 +31,8 @@ fun OrganizationsRoute() {
             isAdmin = true,
             accessToken = state.accessToken,
             currentOrgId = currentOrgId,
-            onOrgChange = onOrgChange
+            onOrgChange = onOrgChange,
+            authProvider = provider
         ) {
             OrganizationPage(
                 accessToken = state.accessToken,

@@ -2,6 +2,7 @@ package net.kigawa.admin.layout
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,6 +27,8 @@ import kotlinx.browser.localStorage
 import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import net.kigawa.admin.auth.AuthState
+import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.organizations.Organization
 import net.kigawa.admin.organizations.fetchMyOrganizations
 import org.jetbrains.compose.web.css.Color
@@ -51,6 +54,7 @@ fun AppShell(
     accessToken: String,
     currentOrgId: String?,
     onOrgChange: (String?) -> Unit,
+    authProvider: KeycloakAuthProvider,
     content: @Composable () -> Unit
 ) {
     val ctx = rememberPageContext()
@@ -58,6 +62,9 @@ fun AppShell(
     var orgs by remember { mutableStateOf<List<Organization>>(emptyList()) }
     var orgLoading by remember { mutableStateOf(true) }
     val orgScope = rememberCoroutineScope()
+    // アカウントメニュー用に認証状態を購読する
+    val authState by authProvider.authState.collectAsState()
+    val accountScope = rememberCoroutineScope()
 
     // 組織一覧を取得してOrgSwitcher用に保持
     LaunchedEffect(accessToken) {
@@ -122,6 +129,44 @@ fun AppShell(
                             .fontWeight(if (active) FontWeight.Bold else FontWeight.Normal)
                     )
                 }
+            }
+
+            // サイドバー下部のアカウントメニュー(Google式アカウント切替え)
+            val accountState = authState as? AuthState.Authenticated
+            if (accountState != null) {
+                AccountSwitcher(
+                    state = accountState,
+                    onSwitch = { id ->
+                        try {
+                            authProvider.switchAccount(id)
+                        } catch (e: Throwable) {
+                            // 切替え失敗時は現状維持し、描画クラッシュさせない
+                        }
+                    },
+                    onRemove = { id ->
+                        try {
+                            authProvider.removeAccount(id)
+                        } catch (e: Throwable) {
+                            // 削除失敗時は現状維持し、描画クラッシュさせない
+                        }
+                    },
+                    onAddAccount = {
+                        accountScope.launch {
+                            try {
+                                authProvider.startLogin(forceLogin = true)
+                            } catch (e: Throwable) {
+                                // ログイン開始失敗時は現状維持し、描画クラッシュさせない
+                            }
+                        }
+                    },
+                    onLogoutAll = {
+                        try {
+                            authProvider.logoutAll()
+                        } catch (e: Throwable) {
+                            // ログアウト失敗時は現状維持し、描画クラッシュさせない
+                        }
+                    }
+                )
             }
         }
         Column(modifier = Modifier.fillMaxSize()) {

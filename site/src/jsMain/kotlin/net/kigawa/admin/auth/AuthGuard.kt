@@ -33,7 +33,11 @@ import org.jetbrains.compose.web.css.rgba
 @Composable
 fun AuthGuard(
     requireAdmin: Boolean = false,
-    content: @Composable (state: AuthState.Authenticated, logout: () -> Unit) -> Unit
+    content: @Composable (
+        state: AuthState.Authenticated,
+        logout: () -> Unit,
+        provider: KeycloakAuthProvider
+    ) -> Unit
 ) {
     val authProvider = remember { KeycloakAuthProvider() }
     val authState by authProvider.authState.collectAsState()
@@ -67,9 +71,9 @@ fun AuthGuard(
             // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い。
             // 実際のアクセス制御はサーバー側のRBACで行う。
             if (requireAdmin) {
-                content(state) { authProvider.logout() }
+                content(state, { authProvider.logoutAll() }, authProvider)
             } else {
-                content(state) { authProvider.logout() }
+                content(state, { authProvider.logoutAll() }, authProvider)
             }
         }
         is AuthState.Error -> Box(
