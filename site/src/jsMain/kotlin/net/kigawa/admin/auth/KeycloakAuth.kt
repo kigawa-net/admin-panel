@@ -163,6 +163,11 @@ private const val LEGACY_ID_PREFIX = "legacy-"
 /** Refresh this long before actual expiry, to allow for request latency and clock skew. */
 private const val REFRESH_MARGIN_MS = 30_000L
 
+/** init()の時点で「期限切れか、まもなく期限切れ」とみなす猶予(issue #184)。
+ * API往復の遅延とクライアント/サーバー間の時計誤差を見るため、
+ * 自動リフレッシュ用のREFRESH_MARGIN_MS(30秒)より広めに60秒取る。 */
+private const val INIT_REFRESH_MARGIN_MS = 60_000L
+
 private fun nowMillis(): Long = (js("Date.now()") as Double).toLong()
 
 private val accountsJson = Json {
@@ -227,14 +232,61 @@ class KeycloakAuthProvider : AutoCloseable {
             _authState.value = AuthState.Unauthenticated
             return
         }
-        if (localStorage[KEY_ACTIVE_ACCOUNT] == null) {
-            localStorage[KEY_ACTIVE_ACCOUNT] = accounts.keys.first()
+        emitActiveAccountOrRefresh {
+            // 自動更新は初回リフレッシュの完了後に始める。先に走らせると
+            // 期限前の自動リフレッシュと二重リクエストになる(issue #184)。
+            scheduleAutoRefresh()
         }
-        emitActiveOrUnauthenticated()
-        scheduleAutoRefresh()
-        // localStorageにはロール情報が最新で入っていない場合があるため、
-        // 起動時に userinfo から管理者フラグを最新化する(失敗時は現状維持)
-        refreshActiveAdminFlag()
+    }
+
+    /** 保存済みトークンを、追加のリフレッシュなしでそのままAPIへ送れてよいか判定する。
+     * 期限切れ・まもなく期限切れ(INIT_REFRESH_MARGIN_MS以内)・期限不明(expiresAt=0、
+     * 古いデータ等)は false とし、先にリフレッシュを試みる。 */
+    private fun isTokenUsableWithoutRefresh(account: StoredAccount): Boolean {
+        if (account.expiresAt <= 0L) return false
+        return account.expiresAt - nowMillis() > INIT_REFRESH_MARGIN_MS
+    }
+
+    /**
+     * 有効アカウントの状態を流す。保存済みトークンが使える間は従来どおり即座に
+     * Authenticated を流し、期限切れ(またはまもなく期限切れ・期限不明)の場合は
+     * Authenticated を先に流さない(issue #184)。期限切れトークンを先にAPIへ送ると
+     * 描画と同時に401になるため、Loading のまま先にリフレッシュを試み、
+     * 成功時にのみ新しいトークンで Authenticated を流す。
+     * リフレッシュ失敗時のみ handleRefreshFailure() へ回し、残アカウントがあれば
+     * 先頭を有効化して継続、なければログイン要求(エラー表示)へ落とす。
+     * [onSettled] は状態が流れた後に呼ぶ(自動更新スケジュールの開始など)。
+     * リフレッシュ成功時は userinfo 取得を併せて行うため、管理者フラグの再取得はしない。
+     */
+    private fun emitActiveAccountOrRefresh(onSettled: () -> Unit) {
+        val resolved = resolveActiveAccount()
+        if (resolved == null) {
+            // アカウントが無い。未認証として流す(呼出し側では空判定済みだが安全側)。
+            emitActiveOrUnauthenticated()
+            onSettled()
+            return
+        }
+        if (isTokenUsableWithoutRefresh(resolved.second)) {
+            // 有効な保存済みトークンがあれば、従来どおり即座に認証済みを流す
+            emitActiveOrUnauthenticated()
+            // localStorageにはロール情報が最新で入っていない場合があるため、
+            // userinfo から管理者フラグを最新化する(失敗時は現状維持)
+            refreshActiveAdminFlag()
+            onSettled()
+            return
+        }
+        // 期限切れトークンをAPIへ送って401にする前に、先にリフレッシュを試す。
+        _authState.value = AuthState.Loading
+        scope.launch {
+            if (!refreshActiveAccount()) {
+                // 失敗時のみ既存の失効処理へ回す。残アカウントがあれば先頭を有効化して
+                // 継続し、なければログイン要求(エラー表示)へ落とす。
+                handleRefreshFailure()
+                // 切替先アカウントの管理者フラグは userinfo で最新化する(失敗時は現状維持)
+                refreshActiveAdminFlag()
+            }
+            onSettled()
+        }
     }
 
     /**
@@ -335,26 +387,39 @@ class KeycloakAuthProvider : AutoCloseable {
         }
     }
 
-    /** 有効アカウントの状態を流す。指定が壊れていれば先頭を有効化し、空なら未認証にする。 */
-    private fun emitActiveOrUnauthenticated() {
+    /**
+     * 有効アカウントを解決する。指定が壊れていれば先頭を有効化して保存し直す。
+     * アカウントが1件も無ければ null。
+     */
+    private fun resolveActiveAccount(): Pair<String, StoredAccount>? {
         val accounts = loadAccounts()
+        if (accounts.isEmpty()) return null
         var activeId = try {
             localStorage[KEY_ACTIVE_ACCOUNT]
         } catch (e: Throwable) {
             null
         }
         var active = if (activeId != null) accounts[activeId] else null
-        if (active == null && accounts.isNotEmpty()) {
+        if (active == null || activeId == null) {
             // 有効アカウント指定が壊れている場合は先頭を有効化する
             activeId = accounts.keys.first()
             active = accounts[activeId]
             try {
-                localStorage[KEY_ACTIVE_ACCOUNT] = activeId as String
+                localStorage[KEY_ACTIVE_ACCOUNT] = activeId
             } catch (e: Throwable) {
                 // 保存失敗時は今回の表示だけ有効化する
             }
         }
-        if (active != null && activeId != null) {
+        // 上の分岐で activeId/active は必ず非nullになる(コンパイラもこれを認識する)
+        return if (active != null) activeId to active else null
+    }
+
+    /** 有効アカウントの状態を流す。指定が壊れていれば先頭を有効化し、空なら未認証にする。 */
+    private fun emitActiveOrUnauthenticated() {
+        val accounts = loadAccounts()
+        val resolved = resolveActiveAccount()
+        if (resolved != null) {
+            val (activeId, active) = resolved
             _authState.value = AuthState.Authenticated(
                 username = active.username,
                 accessToken = active.accessToken,
@@ -625,8 +690,11 @@ class KeycloakAuthProvider : AutoCloseable {
             val accounts = loadAccounts()
             if (!accounts.containsKey(id)) return
             localStorage[KEY_ACTIVE_ACCOUNT] = id
-            emitActiveOrUnauthenticated()
-            scheduleAutoRefresh()
+            // 期限切れ(またはまもなく期限切れ)のアカウントへ切り替えるときは、
+            // 期限切れトークンでAPIを叩いて401にする前に先にリフレッシュする(issue #184)。
+            emitActiveAccountOrRefresh {
+                scheduleAutoRefresh()
+            }
         } catch (e: Throwable) {
             // 切替え失敗時は現状維持し、描画クラッシュさせない
         }
@@ -659,8 +727,11 @@ class KeycloakAuthProvider : AutoCloseable {
                     // 保存失敗時は今回の表示だけ有効化する
                 }
             }
-            emitActiveOrUnauthenticated()
-            scheduleAutoRefresh()
+            // 残った先頭アカウントのトークンが期限切れなら、401を避けるため先に
+            // リフレッシュしてから認証済みを流す(issue #184)。
+            emitActiveAccountOrRefresh {
+                scheduleAutoRefresh()
+            }
         } catch (e: Throwable) {
             // 削除失敗時は現状維持し、描画クラッシュさせない
         }

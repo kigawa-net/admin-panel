@@ -277,12 +277,23 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
         servers = null
         val topology = try {
             fetchInfrastructureTopology(httpClient, currentAccessToken)
+        } catch (e: CancellationException) {
+            // 再試行・ページ離脱によるキャンセルは失敗ではない(再取得側が結果を記録する)
+            throw e
         } catch (e: Throwable) {
             // ktor-client-jsがブラウザのfetch()失敗(CORS・オフライン等)を投げる際、
             // Kotlinのcatch (e: Exception)をすり抜けてコルーチンの未捕捉例外ハンドラに
             // まで届き、ページ全体の描画が白紙になる不具合が実機で確認された。
             // Throwableで受けることで、この描画クラッシュを防ぐ。
-            state = InfrastructureUiState.Error("インフラ構成を取得できませんでした")
+            // HTTPエラー(401/403/5xx)は理由をそのまま出し、通信断等の未知の例外だけ
+            // 従来の固定文言に潰す(issue #184)。
+            state = InfrastructureUiState.Error(
+                if (e is InfrastructureApiException) {
+                    e.message ?: "インフラ構成を取得できませんでした"
+                } else {
+                    "インフラ構成を取得できませんでした"
+                }
+            )
             return@LaunchedEffect
         }
         // まずホスト一覧(高速パス)だけで画面を表示する。VM/ディスク/PCI等の詳細は
