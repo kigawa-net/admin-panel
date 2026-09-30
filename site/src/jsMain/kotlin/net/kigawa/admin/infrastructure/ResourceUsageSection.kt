@@ -20,6 +20,7 @@ import com.varabyte.kobweb.silk.components.text.SpanText
 import io.ktor.client.HttpClient
 import kotlinx.browser.document
 import kotlinx.browser.window
+import kotlinx.coroutines.CancellationException
 import org.jetbrains.compose.web.css.Color
 import org.jetbrains.compose.web.css.height
 import org.jetbrains.compose.web.css.percent
@@ -46,9 +47,15 @@ private const val MEMORY_COLOR = "#008300"
  * インフラのリソース利用量グラフ(issue #132)。
  * 物理ホスト(Proxmox rrddata)とK8sノード(Prometheus cAdvisor)それぞれのCPU/メモリを、
  * 時間範囲セレクタ(1時間/6時間/24時間)付きで表示する。
+ *
+ * @param onLoadState 読み込み状態を親ページの全体進捗へ伝える(issue #166)。
  */
 @Composable
-fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
+fun ResourceUsageSection(
+    httpClient: HttpClient,
+    accessToken: String,
+    onLoadState: (SectionLoadState) -> Unit = {}
+) {
     var rangeMinutes by remember { mutableStateOf(60) }
     var data by remember { mutableStateOf<ResourceUsageResponse?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -57,13 +64,21 @@ fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
     LaunchedEffect(rangeMinutes) {
         loading = true
         error = null
+        // 初回の読み込みだけ全体進捗に出す。レンジ変更の再取得では進捗バーを出さず、
+        // ページ上部の進捗パネルが出現/消失して表がずれるのを避ける(issue #166)。
+        val reportProgress = data == null
+        if (reportProgress) onLoadState(SectionLoadState.Loading)
         try {
             data = fetchResourceUsage(httpClient, accessToken, rangeMinutes)
+            if (reportProgress) onLoadState(SectionLoadState.Loaded)
+        } catch (e: CancellationException) {
+            // レンジ変更・アンマウントによるキャンセルは失敗ではない(次の取得側が記録する)
         } catch (e: Throwable) {
             // ブラウザのfetch()失敗はExceptionをすり抜けて描画クラッシュを起こすことがあるため
             // (InfrastructurePage側と同じ対策)Throwableで受ける。
             error = e.message ?: "取得に失敗しました"
             data = null
+            if (reportProgress) onLoadState(SectionLoadState.Failed)
         }
         loading = false
     }
@@ -382,9 +397,15 @@ private fun UsageLineChart(
 /**
  * グルーピングされたリソース使用量グラフ(issue #147)。
  * role / pciType / physicalHost の3軸でタブ切り替え表示。
+ *
+ * @param onLoadState 読み込み状態を親ページの全体進捗へ伝える(issue #166)。
  */
 @Composable
-fun GroupedResourceUsageSection(httpClient: HttpClient, accessToken: String) {
+fun GroupedResourceUsageSection(
+    httpClient: HttpClient,
+    accessToken: String,
+    onLoadState: (SectionLoadState) -> Unit = {}
+) {
     var rangeMinutes by remember { mutableStateOf(60) }
     var data by remember { mutableStateOf<GroupedResourceUsageResponse?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -396,11 +417,18 @@ fun GroupedResourceUsageSection(httpClient: HttpClient, accessToken: String) {
     LaunchedEffect(rangeMinutes) {
         loading = true
         error = null
+        // 初回の読み込みだけ全体進捗に出す(ResourceUsageSectionと同じ理由、issue #166)。
+        val reportProgress = data == null
+        if (reportProgress) onLoadState(SectionLoadState.Loading)
         try {
             data = fetchGroupedResourceUsage(httpClient, accessToken, rangeMinutes)
+            if (reportProgress) onLoadState(SectionLoadState.Loaded)
+        } catch (e: CancellationException) {
+            // レンジ変更・アンマウントによるキャンセルは失敗ではない(次の取得側が記録する)
         } catch (e: Throwable) {
             error = e.message ?: "取得に失敗しました"
             data = null
+            if (reportProgress) onLoadState(SectionLoadState.Failed)
         }
         loading = false
     }

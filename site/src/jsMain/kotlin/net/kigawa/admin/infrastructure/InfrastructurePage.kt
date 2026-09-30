@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import com.varabyte.kobweb.compose.css.FontSize
 import com.varabyte.kobweb.compose.css.FontWeight
 import com.varabyte.kobweb.compose.foundation.layout.Arrangement
+import com.varabyte.kobweb.compose.foundation.layout.Box
 import com.varabyte.kobweb.compose.foundation.layout.Column
 import com.varabyte.kobweb.compose.foundation.layout.Row
 import com.varabyte.kobweb.compose.ui.Alignment
@@ -24,6 +25,7 @@ import io.ktor.client.engine.js.Js
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.browser.window
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -45,6 +47,8 @@ import net.kigawa.admin.servers.gracefulShutdownNode
 import net.kigawa.admin.servers.promptDrainTimeoutAndConfirm
 import net.kigawa.admin.servers.uncordonNode
 import org.jetbrains.compose.web.css.Color
+import org.jetbrains.compose.web.css.FlexWrap
+import org.jetbrains.compose.web.css.percent
 import org.jetbrains.compose.web.css.px
 import org.jetbrains.compose.web.css.rgba
 
@@ -53,6 +57,37 @@ private sealed class InfrastructureUiState {
     data class Loaded(val topology: InfrastructureTopology) : InfrastructureUiState()
     data class Error(val message: String) : InfrastructureUiState()
 }
+
+/**
+ * 1カテゴリのロード状態(issue #166)。リソース利用量グラフのように内部で勝手に
+ * 取得し直すセクションが、全体進捗へ自分の状態を報告するために使う。
+ */
+enum class SectionLoadState { Loading, Loaded, Failed }
+
+/** ホストごとに取得するカテゴリ(issue #158)。読み込み中表示と全体進捗で共用する。 */
+private val HOST_SECTIONS = listOf("vms", "disks", "pci", "hw", "slots", "diskusage")
+
+/** 表示中K8sノードごとに取得するカテゴリ(issue #166)。 */
+private val NODE_SECTIONS = listOf("nodeslots", "nodediskusage")
+
+/** 進捗のキー(末尾のカテゴリ名)から、画面に出すラベルへ変換する(issue #166)。 */
+private val SECTION_LABELS = mapOf(
+    "topology" to "ホスト一覧",
+    "servers" to "サーバー一覧",
+    "vms" to "VM一覧",
+    "disks" to "ディスク情報",
+    "pci" to "拡張デバイス",
+    "hw" to "ハードウェア情報",
+    "slots" to "空きスロット",
+    "diskusage" to "ディスク使用率",
+    "nodeslots" to "ノード別スロット",
+    "nodediskusage" to "ノード別ディスク使用率",
+    "resourceusage" to "リソース利用量",
+    "groupedusage" to "グループ別メトリクス"
+)
+
+private fun sectionLabel(key: String): String =
+    SECTION_LABELS[key.substringAfterLast('/')] ?: key
 
 @Composable
 fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
@@ -73,6 +108,12 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     var hostDiskUsage by remember { mutableStateOf<Map<String, List<DiskUsage>>>(emptyMap()) }
     var nodeDiskUsage by remember { mutableStateOf<Map<String, List<DiskUsage>>>(emptyMap()) }
     var completedSections by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // 失敗して「空のまま」確定したカテゴリ(issue #166)。データは既存どおり空のままにし、
+    // 画面上部の進捗にだけ「失敗」と分かるチップを出す。
+    var failedSections by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // リソース利用量グラフのように内部で勝手に再取得するセクションのキー(issue #166)。
+    // マウント時に報告を受けたキーだけ全体進捗の母数にする(未マウント時に止まらないように)。
+    var externalSections by remember { mutableStateOf<Set<String>>(emptySet()) }
     var servers by remember { mutableStateOf<List<ServerStatus>?>(null) }
     var refreshKey by remember { mutableStateOf(0) }
     // issue #116でサーバー管理ページを統合した際に持ち込んだ状態。Cordon/Drain/
@@ -87,6 +128,26 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
         }
     }
     val scope = rememberCoroutineScope()
+
+    /** カテゴリの取得結果を進捗へ記録する(issue #166)。成功・失敗どちらも「完了」として
+     * 扱い、失敗だけfailedSectionsに残して進捗上に表示する。 */
+    fun finishSection(key: String, succeeded: Boolean) {
+        completedSections = completedSections + key
+        failedSections = if (succeeded) failedSections - key else failedSections + key
+    }
+
+    /** 自己申告セクション(リソース利用量グラフ等)のロード状態を受け取る(issue #166)。 */
+    fun reportSection(key: String, sectionState: SectionLoadState) {
+        externalSections = externalSections + key
+        when (sectionState) {
+            SectionLoadState.Loading -> {
+                completedSections = completedSections - key
+                failedSections = failedSections - key
+            }
+            SectionLoadState.Loaded -> finishSection(key, true)
+            SectionLoadState.Failed -> finishSection(key, false)
+        }
+    }
 
     // accessTokenはKeycloakのトークン自動更新のたびに(トークン有効期限前の
     // サイレントリフレッシュで)新しい値になる。LaunchedEffectのキーにaccessTokenを
@@ -140,8 +201,15 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
 
     /** 指定ホストで未完了のカテゴリ集合。HostCard内の区分ごとの読み込み中表示に使う。 */
     fun pendingCategories(hostName: String): Set<String> =
-        setOf("vms", "disks", "pci", "hw", "slots", "diskusage")
-            .filter { "$hostName/$it" !in completedSections }.toSet()
+        HOST_SECTIONS.filter { "$hostName/$it" !in completedSections }.toSet()
+
+    /** 指定K8sノードで未完了のカテゴリ集合(issue #166)。物理専用ノードのカードに渡す。
+     * VM系ノードはスロット表示が抑止されるため、読み込み行を出さない(すぐ消えるチラつき回避)。 */
+    fun nodePendingCategories(nodeName: String): Set<String> =
+        listOf("nodeslots" to "slots", "nodediskusage" to "diskusage")
+            .mapNotNull { (section, cardCategory) ->
+                if ("$nodeName/$section" in completedSections) null else cardCategory
+            }.toSet()
 
     LaunchedEffect(refreshKey) {
         hostVms = emptyMap()
@@ -152,7 +220,10 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
         nodeSlots = emptyMap()
         hostDiskUsage = emptyMap()
         nodeDiskUsage = emptyMap()
-        completedSections = emptySet()
+        // グラフ系(externalSections)はrefreshKeyでは取得し直さないので、完了/失敗の記録だけ
+        // 残す(issue #166)。ここで消してしまうと、再取得しないセクションが未完了のまま残る。
+        completedSections = completedSections.filter { it in externalSections }.toSet()
+        failedSections = failedSections.filter { it in externalSections }.toSet()
         servers = null
         val topology = try {
             fetchInfrastructureTopology(httpClient, currentAccessToken)
@@ -169,103 +240,125 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
         state = InfrastructureUiState.Loaded(topology)
     }
 
-    // ホスト×カテゴリ単位の並列取得(issue #158)。各launchはこのエフェクトの子なので、
-    // refreshKeyやホスト一覧の変化で自動キャンセルされ、古い応答が新しい状態に混ざらない。
-    // 1カテゴリの取得は他と独立しているため、低速なカテゴリが他を道連れにしない。
-    LaunchedEffect(refreshKey, hostNames) {
-        if (hostNames.isEmpty()) return@LaunchedEffect
-        fun markComplete(key: String) {
-            completedSections = completedSections + key
-        }
-        hostNames.forEach { hostName ->
-            launch {
-                try {
-                    hostVms = hostVms + (hostName to fetchHostVms(httpClient, currentAccessToken, hostName))
-                } catch (e: Throwable) {
-                    // 失敗時は空のまま完了扱い(既存のグレースフルデグラデーション方針)
-                } finally {
-                    markComplete("$hostName/vms")
-                }
-            }
-            launch {
-                try {
-                    hostDisks = hostDisks + (hostName to fetchHostDisks(httpClient, currentAccessToken, hostName))
-                } catch (e: Throwable) {
-                } finally {
-                    markComplete("$hostName/disks")
-                }
-            }
-            launch {
-                try {
-                    hostPci = hostPci + (hostName to fetchHostPciDevices(httpClient, currentAccessToken, hostName))
-                } catch (e: Throwable) {
-                } finally {
-                    markComplete("$hostName/pci")
-                }
-            }
-            launch {
-                try {
-                    hostHw = hostHw + (hostName to fetchHostHwStatus(httpClient, currentAccessToken, hostName))
-                } catch (e: Throwable) {
-                } finally {
-                    markComplete("$hostName/hw")
-                }
-            }
-            launch {
-                try {
-                    hostSlots = hostSlots + (hostName to fetchHostSlots(httpClient, currentAccessToken, hostName))
-                } catch (e: Throwable) {
-                    // 503(SSH未設定)等もここに来る。区分完了扱いにして読み込み中表示だけ外す。
-                } finally {
-                    markComplete("$hostName/slots")
-                }
-            }
-            // ディスク使用率は空きスロット取得とは独立したエンドポイント(admin-panel#148)。
-            // 両者は別SSH接続のため、このように並列に叩ける。
-            launch {
-                try {
-                    hostDiskUsage = hostDiskUsage + (hostName to fetchHostDiskUsage(httpClient, currentAccessToken, hostName))
-                } catch (e: Throwable) {
-                    // 503(SSH未設定)等もここに来る。rootfs集約行にフォールバックされる。
-                } finally {
-                    markComplete("$hostName/diskusage")
-                }
-            }
-        }
+    // サーバー一覧(K8sノード)はホスト一覧とは独立(issue #166)。ホストが0件のときでも
+    // 必ず走るように単独のエフェクトへ分け、「詳細情報を読み込み中...」と進捗が止まらないようにする。
+    LaunchedEffect(refreshKey) {
         launch {
             try {
                 servers = fetchServerStatuses(httpClient, currentAccessToken).servers
+                finishSection("servers", true)
+            } catch (e: CancellationException) {
+                // 再取得・ページ離脱によるキャンセルは失敗ではない(再取得側が結果を記録する)
             } catch (e: Throwable) {
+                // 失敗時は空のまま完了扱い(既存のグレースフルデグラデーション方針)
                 servers = emptyList()
+                finishSection("servers", false)
+            }
+        }
+    }
+
+    // ホスト×カテゴリ単位の並列取得(issue #158)。各launchはこのエフェクトの子なので、
+    // refreshKeyやホスト一覧の変化で自動キャンセルされ、古い応答が新しい状態に混ざらない。
+    // 1カテゴリの取得は他と独立しているため、低速なカテゴリが他を道連れにしない。
+    // 結果はfinishSectionで全体進捗へ記録し、どこがまだ届いていないかを分かるようにする(issue #166)。
+    LaunchedEffect(refreshKey, hostNames) {
+        if (hostNames.isEmpty()) return@LaunchedEffect
+
+        /** 1カテゴリ分を並列取得する。成功/失敗を全体進捗へ記録し、キャンセルは無視する。 */
+        fun fetchCategory(key: String, block: suspend () -> Unit) {
+            launch {
+                try {
+                    block()
+                    finishSection(key, true)
+                } catch (e: CancellationException) {
+                    // 再取得・ページ離脱によるキャンセルは失敗ではない(再取得側が結果を記録する)
+                } catch (e: Throwable) {
+                    // 失敗時は空のまま完了扱い(既存のグレースフルデグラデーション方針)
+                    finishSection(key, false)
+                }
+            }
+        }
+
+        hostNames.forEach { hostName ->
+            fetchCategory("$hostName/vms") {
+                hostVms = hostVms + (hostName to fetchHostVms(httpClient, currentAccessToken, hostName))
+            }
+            fetchCategory("$hostName/disks") {
+                hostDisks = hostDisks + (hostName to fetchHostDisks(httpClient, currentAccessToken, hostName))
+            }
+            fetchCategory("$hostName/pci") {
+                hostPci = hostPci + (hostName to fetchHostPciDevices(httpClient, currentAccessToken, hostName))
+            }
+            fetchCategory("$hostName/hw") {
+                hostHw = hostHw + (hostName to fetchHostHwStatus(httpClient, currentAccessToken, hostName))
+            }
+            // 503(SSH未設定)等もここに来る。区分完了扱いにして読み込み中表示だけ外す。
+            fetchCategory("$hostName/slots") {
+                hostSlots = hostSlots + (hostName to fetchHostSlots(httpClient, currentAccessToken, hostName))
+            }
+            // ディスク使用率は空きスロット取得とは独立したエンドポイント(admin-panel#148)。
+            // 両者は別SSH接続のため、このように並列に叩ける。503(SSH未設定)等もここに来る
+            // が、rootfs(Proxmox API由来)の集約行にフォールバックされる。
+            fetchCategory("$hostName/diskusage") {
+                hostDiskUsage = hostDiskUsage + (hostName to fetchHostDiskUsage(httpClient, currentAccessToken, hostName))
             }
         }
     }
 
     // 表示中k8sノード(matched + standalone)ごとのスロット情報を並列取得する。
     // VM系ノードはvirtualized=trueで返り、ServerCard側で非表示になる。
-    // 失敗時は空のまま(既存のグレースフルデグラデーション方針)。
+    // 失敗時は空のまま(既存のグレースフルデグラデーション方針)。結果は全体進捗へ記録する(issue #166)。
     val displayedNodeNames =
         ((standaloneNodes?.map { it.name }.orEmpty() +
             hostVms.values.flatten().mapNotNull { it.matchedNode?.name }).toSet())
     LaunchedEffect(refreshKey, displayedNodeNames) {
         if (displayedNodeNames.isEmpty()) return@LaunchedEffect
-        displayedNodeNames.forEach { nodeName ->
+
+        /** 1カテゴリ分を並列取得する。成功/失敗を全体進捗へ記録し、キャンセルは無視する。 */
+        fun fetchCategory(key: String, block: suspend () -> Unit) {
             launch {
                 try {
-                    nodeSlots = nodeSlots + (nodeName to fetchNodeSlots(httpClient, currentAccessToken, nodeName))
+                    block()
+                    finishSection(key, true)
+                } catch (e: CancellationException) {
+                    // 再取得・ページ離脱によるキャンセルは失敗ではない(再取得側が結果を記録する)
                 } catch (e: Throwable) {
-                    // 503(NODE_SSH未設定)等もここに来る。表示だけ出さない。
-                }
-            }
-            launch {
-                try {
-                    nodeDiskUsage = nodeDiskUsage + (nodeName to fetchNodeDiskUsage(httpClient, currentAccessToken, nodeName))
-                } catch (e: Throwable) {
-                    // 503(NODE_SSH未設定)等もここに来る。ディスク行は表示しない。
+                    // 失敗時は空のまま完了扱い(既存のグレースフルデグラデーション方針)
+                    finishSection(key, false)
                 }
             }
         }
+
+        displayedNodeNames.forEach { nodeName ->
+            // 503(NODE_SSH未設定)等もここに来る。表示だけ出さない。
+            fetchCategory("$nodeName/nodeslots") {
+                nodeSlots = nodeSlots + (nodeName to fetchNodeSlots(httpClient, currentAccessToken, nodeName))
+            }
+            // 503(NODE_SSH未設定)等もここに来る。ディスク行は表示しない。
+            fetchCategory("$nodeName/nodediskusage") {
+                nodeDiskUsage = nodeDiskUsage + (nodeName to fetchNodeDiskUsage(httpClient, currentAccessToken, nodeName))
+            }
+        }
     }
+
+    // 全体進捗(issue #166)。取得対象のキーは「ホスト一覧」「表示中のK8sノード」から導出し、
+    // 完了(completedSections)との差分で「まだ届いていないカテゴリ」を出す。導出なので、
+    // 対象から外れたホスト・ノードのキーは自動的に母数から外れ、進捗が止まらない。
+    val expectedSections = buildSet {
+        if (state is InfrastructureUiState.Loading) add("topology")
+        // サーバー一覧は常時対象(下のLaunchedEffectが必ず走るため止まらない)。
+        add("servers")
+        if (state is InfrastructureUiState.Loaded) {
+            hostNames.forEach { host -> HOST_SECTIONS.forEach { add("$host/$it") } }
+            displayedNodeNames.forEach { node -> NODE_SECTIONS.forEach { add("$node/$it") } }
+            // グラフ系はマウント中に報告を受けたキーだけ母数にする(未マウント時に止まらないように)。
+            addAll(externalSections)
+        }
+    }
+    /** まだ届いていないカテゴリ(取得中)。 */
+    val pendingSections = expectedSections.filter { it !in completedSections }.toSet()
+    /** 予定どおり届かなかったカテゴリ。データは空のまま表示し、進捗にだけ「失敗」を出す。 */
+    val failedShownSections = expectedSections.filter { it in failedSections }.toSet()
 
     // VM一覧とサーバー一覧が出揃うたびにpending操作の解決判定を行う。
     LaunchedEffect(hostVms, servers) {
@@ -408,6 +501,15 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                 SpanText(message, modifier = Modifier.color(Colors.Blue))
             }
 
+            // カテゴリごとのロード進捗(issue #166)。取得中のカテゴリのチップが残り、
+            // 完了したカテゴリから消えていく。失敗カテゴリは空のままでも赤いチップで分かる。
+            LoadProgressSection(
+                done = expectedSections.size - pendingSections.size,
+                total = expectedSections.size,
+                pendingSections = pendingSections,
+                failedSections = failedShownSections
+            )
+
             when (val current = state) {
                 is InfrastructureUiState.Loading -> SpanText("読み込み中...")
                 is InfrastructureUiState.Error -> ErrorStateWithRetry(current.message, onRetry = { refreshKey++ })
@@ -425,9 +527,18 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                     SpanText("物理ホスト・ノードが見つかりませんでした", modifier = Modifier.color(Colors.Gray))
                 } else {
                     // リソース利用量グラフ(issue #132)。ホスト一覧とは独立に読み込む。
-                    ResourceUsageSection(httpClient = httpClient, accessToken = accessToken)
+                    // ロード状態は全体進捗へ報告する(issue #166)。
+                    ResourceUsageSection(
+                        httpClient = httpClient,
+                        accessToken = accessToken,
+                        onLoadState = { reportSection("resourceusage", it) }
+                    )
                     // グルーピングされたリソース利用量(issue #147)
-                    GroupedResourceUsageSection(httpClient = httpClient, accessToken = accessToken)
+                    GroupedResourceUsageSection(
+                        httpClient = httpClient,
+                        accessToken = accessToken,
+                        onLoadState = { reportSection("groupedusage", it) }
+                    )
                     current.topology.hosts.forEach { host ->
                         HostCard(
                             host = host,
@@ -462,7 +573,11 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                                 accessToken = accessToken,
                                 actions = buildActions(node),
                                 slots = nodeSlots[node.name],
-                                diskUsage = nodeDiskUsage[node.name]
+                                diskUsage = nodeDiskUsage[node.name],
+                                // 物理専用ノードだけカード内にも読み込み中表示を出す(issue #166)。
+                                // VM系ノードはスロットが非表示になるため、読み込み行が出てすぐ
+                                // 消えるチラつきを避けて渡さない。
+                                pendingCategories = nodePendingCategories(node.name)
                             )
                         }
                     }
@@ -470,6 +585,98 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
             }
         }
     }
+}
+
+/**
+ * カテゴリごとのロード進捗(issue #166)。
+ * 取得中のカテゴリはチップが並び、完了したカテゴリから消えていく。失敗したカテゴリは
+ * データを空のままにしたまま(既存のグレースフルデグラデーション方針)、赤いチップだけ残す。
+ */
+@Composable
+private fun LoadProgressSection(
+    done: Int,
+    total: Int,
+    pendingSections: Set<String>,
+    failedSections: Set<String>
+) {
+    if (pendingSections.isEmpty() && failedSections.isEmpty()) return
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(8.px)
+            .backgroundColor(rgba(0, 0, 0, 0.03))
+            .borderRadius(6.px),
+        verticalArrangement = Arrangement.spacedBy(6.px)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SpanText(
+                if (pendingSections.isNotEmpty()) "読み込み $done / $total" else "読み込み完了",
+                modifier = Modifier.fontSize(FontSize.Small).fontWeight(FontWeight.Bold)
+            )
+            if (failedSections.isNotEmpty()) {
+                SpanText(
+                    "取得失敗 ${failedSections.size}件",
+                    modifier = Modifier
+                        .fontSize(FontSize.Small)
+                        .fontWeight(FontWeight.Bold)
+                        .color(Color("#E34948"))
+                )
+            }
+        }
+        if (pendingSections.isNotEmpty() && total > 0) {
+            // 進捗バー。kobweb/silkに該当コンポーネントがないため、背景+塗りの2つのBoxで作る。
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.px)
+                    .backgroundColor(rgba(42, 120, 214, 0.15))
+                    .borderRadius(3.px)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth((done * 100 / total).percent)
+                        .height(6.px)
+                        .backgroundColor(Color("#2A78D6"))
+                        .borderRadius(3.px)
+                )
+            }
+        }
+        // 同じカテゴリは件数でまとめる(ホスト×カテゴリだとチップが数百個になり得るため)。
+        Row(
+            modifier = Modifier.fillMaxWidth().flexWrap(FlexWrap.Wrap).rowGap(6.px),
+            horizontalArrangement = Arrangement.spacedBy(6.px)
+        ) {
+            pendingSections.groupingBy { sectionLabel(it) }.eachCount()
+                .entries.sortedBy { it.key }
+                .forEach { (label, count) ->
+                    SectionChip(label + if (count > 1) " ×$count" else "", failed = false)
+                }
+            failedSections.groupingBy { sectionLabel(it) }.eachCount()
+                .entries.sortedBy { it.key }
+                .forEach { (label, count) ->
+                    SectionChip(label + " 失敗" + if (count > 1) " ×$count" else "", failed = true)
+                }
+        }
+    }
+}
+
+/** 進捗チップ1個。取得中は青、失敗は赤(issue #166)。 */
+@Composable
+private fun SectionChip(text: String, failed: Boolean) {
+    SpanText(
+        text,
+        modifier = Modifier
+            .padding(leftRight = 8.px, topBottom = 2.px)
+            .borderRadius(10.px)
+            .backgroundColor(if (failed) rgba(227, 73, 72, 0.12) else rgba(42, 120, 214, 0.12))
+            .color(if (failed) Color("#E34948") else Color("#2A78D6"))
+            .fontSize(FontSize.Small)
+            .fontWeight(FontWeight.Bold)
+    )
 }
 
 @Composable

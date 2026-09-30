@@ -82,7 +82,9 @@ internal fun ServerCard(
     /** k8sノードのスロット情報。成立時のみ表示し、未取得・VM系では何も出さない。 */
     slots: HostSlotInventory? = null,
     /** マウントポイント別ディスク使用率(admin-panel#148)。未取得時は行自体を出さない。 */
-    diskUsage: List<DiskUsage>? = null
+    diskUsage: List<DiskUsage>? = null,
+    /** 未完了のカテゴリ集合("slots"/"diskusage")。物理専用ノードの読み込み中にだけ渡す(issue #166)。 */
+    pendingCategories: Set<String> = emptySet()
 ) {
     var showPods by remember { mutableStateOf(false) }
     var pods by remember { mutableStateOf<List<PodSummary>?>(null) }
@@ -150,6 +152,13 @@ internal fun ServerCard(
                 }
             }
         }
+        // ディスク使用率の取得中表示(issue #166)。仮想ノードではそもそも載せないため出さない。
+        if (diskEntry == null && slots?.virtualized != true && "diskusage" in pendingCategories) {
+            SpanText(
+                "ディスク使用率を読み込み中...",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
+        }
         val podText = if (server.podCount != null && server.podCapacity != null) {
             "Pod: ${server.podCount} / ${server.podCapacity}"
         } else {
@@ -179,10 +188,15 @@ internal fun ServerCard(
             if (server.schedulable) "スケジューリング: 有効" else "スケジューリング: 停止中",
             modifier = Modifier.color(if (server.schedulable) Colors.Gray else Color("#E34948")).fontSize(FontSize.Small)
         )
-        // 物理ノードのスロット情報がある場合のみ表示する。VM系ノード・未取得時は
-        // 何も出さず、読み込み中表示も出さない。
+        // 物理ノードのスロット情報がある場合のみ表示する。VM系ノード・取得済みで非表示の
+        // ときは何も出さない。取得中は物理専用ノードのみ読み込み中表示を出す(issue #166)。
         if (slots != null && shouldShowNodeSlots(slots)) {
             SlotInventorySection(slots = slots)
+        } else if (slots == null && "slots" in pendingCategories) {
+            SpanText(
+                "空きスロット情報を読み込み中...",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
         }
 
         Row(
