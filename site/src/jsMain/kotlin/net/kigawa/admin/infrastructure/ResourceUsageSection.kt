@@ -130,7 +130,10 @@ fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
                                 color = CPU_COLOR,
                                 canvasId = "usage-cpu-$hostName-$rangeMinutes",
                                 formatValue = { v -> "${round(v * 10) / 10}%" },
-                                capacityLabel = series.maxCpuCores?.let { "容量 $it コア" }
+                                // 0〜100%のグラフの母数は常に全コア(=100%)。ラベルにコア数を添える(#167)。
+                                capacityValue = 100.0,
+                                capacityLabel = series.maxCpuCores?.let { "容量 $it コア" },
+                                valueInPercent = true
                             )
                             UsageChartCard(
                                 title = "$hostName · メモリ",
@@ -139,6 +142,7 @@ fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
                                 color = MEMORY_COLOR,
                                 canvasId = "usage-mem-$hostName-$rangeMinutes",
                                 formatValue = { v -> "${round(v * 10) / 10} GiB" },
+                                capacityValue = series.maxMemGiB,
                                 capacityLabel = series.maxMemGiB?.let { "容量 ${round(it * 10) / 10} GiB" }
                             )
                         }
@@ -161,6 +165,7 @@ fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
                                 color = CPU_COLOR,
                                 canvasId = "usage-kcpu-$nodeName-$rangeMinutes",
                                 formatValue = { v -> "${round(v * 100) / 100}コア" },
+                                capacityValue = series.cpuCapacityCores?.toDouble(),
                                 capacityLabel = series.cpuCapacityCores?.let { "容量 $it コア" }
                             )
                             UsageChartCard(
@@ -170,6 +175,7 @@ fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
                                 color = MEMORY_COLOR,
                                 canvasId = "usage-kmem-$nodeName-$rangeMinutes",
                                 formatValue = { v -> "${round(v * 10) / 10} GiB" },
+                                capacityValue = series.memCapacityGiB,
                                 capacityLabel = series.memCapacityGiB?.let { "容量 ${round(it * 10) / 10} GiB" }
                             )
                         }
@@ -186,7 +192,15 @@ fun ResourceUsageSection(httpClient: HttpClient, accessToken: String) {
     }
 }
 
-/** 1メトリック分のチャートカード(タイトル+現在値/最大値/容量ラベル+折れ線)。 */
+/**
+ * 1メトリック分のチャートカード(タイトル+現在値/母数ラベル+折れ線)。
+ * 母数(割合の分母)は実測最大ではなくハードウェア容量を使う(#167)。
+ * 容量が得られない場合のみ従来通りの実測最大にフォールバックして表示を崩さない。
+ *
+ * @param capacityValue 容量。ポイントと同じ単位で渡すこと(GiB対GiB、コア対コア)。
+ * @param capacityLabel 母数として表示するラベル(例: "容量 8 コア")
+ * @param valueInPercent ポイントが既に0〜100%の値かどうか(物理ホストCPU)
+ */
 @Composable
 private fun UsageChartCard(
     title: String,
@@ -195,7 +209,9 @@ private fun UsageChartCard(
     color: String,
     canvasId: String,
     formatValue: (Double) -> String,
-    capacityLabel: String? = null
+    capacityValue: Double? = null,
+    capacityLabel: String? = null,
+    valueInPercent: Boolean = false
 ) {
     Column(
         modifier = Modifier
@@ -207,6 +223,19 @@ private fun UsageChartCard(
     ) {
         val max = points.maxOfOrNull { it.value }
         val current = points.lastOrNull()?.value
+        // 母数は容量を優先し、容量不明のときだけ従来通りの実測最大を使う(#167)。
+        val summary = when {
+            current == null -> "データなし"
+            // 0〜100%のグラフは元々容量(全コア)が分母なので、%を重ねず容量だけ添える。
+            valueInPercent && capacityLabel != null -> "現在 ${formatValue(current)} ($capacityLabel)"
+            valueInPercent -> "現在 ${formatValue(current)} (母数 100%)"
+            capacityValue != null && capacityValue > 0 -> {
+                val percent = round(current / capacityValue * 100).toInt()
+                "現在 ${formatValue(current)} / ${capacityLabel ?: formatValue(capacityValue)} (${percent}%)"
+            }
+            else -> "現在 ${formatValue(current)}" +
+                (max?.let { " / 最大 ${formatValue(it)}" } ?: "")
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -214,9 +243,7 @@ private fun UsageChartCard(
         ) {
             SpanText(title, modifier = Modifier.fontSize(FontSize.Small).fontWeight(FontWeight.Bold))
             SpanText(
-                (current?.let { "現在 ${formatValue(it)}" } ?: "データなし") +
-                    (if (max != null && current != null) " / 最大 ${formatValue(max)}" else "") +
-                    (capacityLabel?.let { " ($it)" } ?: ""),
+                summary,
                 modifier = Modifier.fontSize(FontSize.Small).color(Colors.Gray)
             )
         }
@@ -225,7 +252,10 @@ private fun UsageChartCard(
             points = points,
             color = color,
             fixedMax = fixedMax,
-            chartHeight = 72
+            chartHeight = 72,
+            // Y軸上限(=母数)が容量のときは、その旨がグラフ上でも分かるように軸ラベルを出す(#167)。
+            // 容量不明で自動スケールしている場合は出さない。
+            axisTopLabel = capacityLabel ?: if (valueInPercent) "母数 100%" else null
         )
     }
 }
@@ -234,6 +264,8 @@ private fun UsageChartCard(
  * Canvas 2Dによるシンプルな折れ線グラフ。NetworkMapCanvasと同じ描画方式(Canvas +
  * CanvasRenderingContext2D)を使い、外部ライブラリに依存しない。
  * グリッド線(25/50/75%)・線の下の薄い塗り・現在値のドットを描画する。
+ *
+ * @param axisTopLabel Y軸上限(母数)のラベル。容量を示す文字列を左上に描く(#167)。
  */
 @Composable
 private fun UsageLineChart(
@@ -241,7 +273,8 @@ private fun UsageLineChart(
     points: List<ResourceUsagePoint>,
     color: String,
     fixedMax: Double?,
-    chartHeight: Int
+    chartHeight: Int,
+    axisTopLabel: String? = null
 ) {
     Canvas(attrs = {
         id(canvasId)
@@ -251,7 +284,7 @@ private fun UsageLineChart(
         }
     })
 
-    LaunchedEffect(points, canvasId, fixedMax, chartHeight) {
+    LaunchedEffect(points, canvasId, fixedMax, chartHeight, axisTopLabel) {
         val canvas = document.getElementById(canvasId) as? HTMLCanvasElement ?: return@LaunchedEffect
         val dpr = window.devicePixelRatio.coerceAtLeast(1.0)
         val cssWidth = canvas.clientWidth.coerceAtLeast(10)
@@ -333,6 +366,16 @@ private fun UsageLineChart(
         ctx.beginPath()
         ctx.arc(xAt(points.size - 1), yAt(last.value), 3.0, 0.0, PI * 2.0)
         ctx.fill()
+
+        // Y軸上限(母数=ハードウェア容量)のラベルを左上に描く(#167)。折れ線より後ろだと
+        // 見えなくなるため最後に描き、既定のtextAlign(左寄せ)・textBaseline(下端)のままで
+        // 文字幅を触らずに配置している。
+        val topLabel = axisTopLabel
+        if (topLabel != null) {
+            ctx.font = "10px sans-serif"
+            ctx.fillStyle = "#6B7280"
+            ctx.fillText(topLabel, padLeft, padTop + 8.0)
+        }
     }
 }
 
@@ -488,6 +531,7 @@ private fun GroupedSeriesCard(
                 color = CPU_COLOR,
                 canvasId = "grouped-cpu-${groupName}-${kotlin.random.Random.nextLong()}",
                 formatValue = { v -> "${kotlin.math.round(v * 100) / 100}コア" },
+                capacityValue = series.cpuCapacityCores,
                 capacityLabel = series.cpuCapacityCores?.let { "容量 ${kotlin.math.round(it * 100) / 100}コア" }
             )
             UsageChartCard(
@@ -497,6 +541,7 @@ private fun GroupedSeriesCard(
                 color = MEMORY_COLOR,
                 canvasId = "grouped-mem-${groupName}-${kotlin.random.Random.nextLong()}",
                 formatValue = { v -> "${kotlin.math.round(v * 10) / 10} GiB" },
+                capacityValue = series.memCapacityGiB,
                 capacityLabel = series.memCapacityGiB?.let { "容量 ${kotlin.math.round(it * 10) / 10} GiB" }
             )
         }
