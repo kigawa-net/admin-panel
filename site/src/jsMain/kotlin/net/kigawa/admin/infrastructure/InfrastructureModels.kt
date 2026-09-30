@@ -1,7 +1,10 @@
 package net.kigawa.admin.infrastructure
 
+import com.varabyte.kobweb.compose.ui.graphics.Colors
 import kotlinx.serialization.Serializable
 import net.kigawa.admin.servers.ServerStatus
+import org.jetbrains.compose.web.css.CSSColorValue
+import org.jetbrains.compose.web.css.Color
 
 @Serializable
 data class InfraVm(
@@ -118,6 +121,16 @@ data class HostSlotInventory(
     val systemProduct: String? = null
 )
 
+/** マウントポイント別ディスク使用率(admin-panel#148、SSH+df由来)。 */
+@Serializable
+data class DiskUsage(
+    val mountpoint: String,
+    val sizeBytes: Long,
+    val usedBytes: Long,
+    val availBytes: Long,
+    val percent: Int
+)
+
 /** リソース使用量グラフの1サンプル(issue #132)。 */
 @Serializable
 data class ResourceUsagePoint(
@@ -170,6 +183,16 @@ data class GroupedResourceUsageResponse(
     val byPciType: Map<String, GroupedSeries> = emptyMap(),
     val byPhysicalHost: Map<String, GroupedSeries> = emptyMap()
 )
+
+/**
+ * ディスク使用率に応じた表示色(admin-panel#148)。80%以上で既存の注意色、
+ * 90%以上で既存の危険色(赤)を使う。通常値は他の使用量表示と同じグレー。
+ */
+fun usagePercentColor(percent: Int): CSSColorValue = when {
+    percent >= 90 -> Color("#E34948")
+    percent >= 80 -> Color("#8A6D00")
+    else -> Colors.Gray
+}
 
 /** バイト数を読みやすいGiB表記に変換する。 */
 fun formatBytesAsGiB(bytes: Long?): String {

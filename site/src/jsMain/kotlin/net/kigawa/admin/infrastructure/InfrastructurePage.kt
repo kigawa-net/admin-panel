@@ -68,6 +68,10 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     var hostSlots by remember { mutableStateOf<Map<String, HostSlotInventory>>(emptyMap()) }
     // 表示中k8sノードごとのスロット情報(VM系ノードはvirtualized=trueで返り、非表示になる)
     var nodeSlots by remember { mutableStateOf<Map<String, HostSlotInventory>>(emptyMap()) }
+    // ホスト・ノードごとのマウントポイント別ディスク使用率(admin-panel#148)。SSH+df由来で
+    // スロット取得とは独立に並列取得する。失敗時は空のまま表示されない。
+    var hostDiskUsage by remember { mutableStateOf<Map<String, List<DiskUsage>>>(emptyMap()) }
+    var nodeDiskUsage by remember { mutableStateOf<Map<String, List<DiskUsage>>>(emptyMap()) }
     var completedSections by remember { mutableStateOf<Set<String>>(emptySet()) }
     var servers by remember { mutableStateOf<List<ServerStatus>?>(null) }
     var refreshKey by remember { mutableStateOf(0) }
@@ -136,7 +140,8 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
 
     /** 指定ホストで未完了のカテゴリ集合。HostCard内の区分ごとの読み込み中表示に使う。 */
     fun pendingCategories(hostName: String): Set<String> =
-        setOf("vms", "disks", "pci", "hw", "slots").filter { "$hostName/$it" !in completedSections }.toSet()
+        setOf("vms", "disks", "pci", "hw", "slots", "diskusage")
+            .filter { "$hostName/$it" !in completedSections }.toSet()
 
     LaunchedEffect(refreshKey) {
         hostVms = emptyMap()
@@ -145,6 +150,8 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
         hostHw = emptyMap()
         hostSlots = emptyMap()
         nodeSlots = emptyMap()
+        hostDiskUsage = emptyMap()
+        nodeDiskUsage = emptyMap()
         completedSections = emptySet()
         servers = null
         val topology = try {
@@ -213,6 +220,17 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                     markComplete("$hostName/slots")
                 }
             }
+            // ディスク使用率は空きスロット取得とは独立したエンドポイント(admin-panel#148)。
+            // 両者は別SSH接続のため、このように並列に叩ける。
+            launch {
+                try {
+                    hostDiskUsage = hostDiskUsage + (hostName to fetchHostDiskUsage(httpClient, currentAccessToken, hostName))
+                } catch (e: Throwable) {
+                    // 503(SSH未設定)等もここに来る。rootfs集約行にフォールバックされる。
+                } finally {
+                    markComplete("$hostName/diskusage")
+                }
+            }
         }
         launch {
             try {
@@ -237,6 +255,13 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                     nodeSlots = nodeSlots + (nodeName to fetchNodeSlots(httpClient, currentAccessToken, nodeName))
                 } catch (e: Throwable) {
                     // 503(NODE_SSH未設定)等もここに来る。表示だけ出さない。
+                }
+            }
+            launch {
+                try {
+                    nodeDiskUsage = nodeDiskUsage + (nodeName to fetchNodeDiskUsage(httpClient, currentAccessToken, nodeName))
+                } catch (e: Throwable) {
+                    // 503(NODE_SSH未設定)等もここに来る。ディスク行は表示しない。
                 }
             }
         }
@@ -409,7 +434,9 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                             details = mergedDetails(host.name),
                             pendingCategories = pendingCategories(host.name),
                             slots = hostSlots[host.name],
+                            diskUsage = hostDiskUsage[host.name],
                             nodeSlots = nodeSlots,
+                            nodeDiskUsage = nodeDiskUsage,
                             pendingOperations = pendingOperations,
                             httpClient = httpClient,
                             accessToken = accessToken,
@@ -434,7 +461,8 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                                 httpClient = httpClient,
                                 accessToken = accessToken,
                                 actions = buildActions(node),
-                                slots = nodeSlots[node.name]
+                                slots = nodeSlots[node.name],
+                                diskUsage = nodeDiskUsage[node.name]
                             )
                         }
                     }
@@ -448,11 +476,15 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
 private fun HostCard(
     host: InfraHost,
     details: InfraHostDetails?,
-    /** 未完了のカテゴリ集合("vms"/"disks"/"pci"/"hw"/"slots")。区分ごとの読み込み中表示に使う。 */
+    /** 未完了のカテゴリ集合("vms"/"disks"/"pci"/"hw"/"slots"/"diskusage")。区分ごとの読み込み中表示に使う。 */
     pendingCategories: Set<String>,
     slots: HostSlotInventory?,
+    /** マウントポイント別ディスク使用率(admin-panel#148)。未取得・失敗時はnullでrootfs行にフォールバック。 */
+    diskUsage: List<DiskUsage>? = null,
     /** 表示中k8sノードごとのスロット情報。VM紐付けノードのカード表示に使う。 */
     nodeSlots: Map<String, HostSlotInventory> = emptyMap(),
+    /** 表示中k8sノードごとのディスク使用率。VM紐付けノードのカード表示に使う。 */
+    nodeDiskUsage: Map<String, List<DiskUsage>> = emptyMap(),
     pendingOperations: Map<String, PendingOperationState>,
     httpClient: HttpClient,
     accessToken: String,
@@ -507,9 +539,35 @@ private fun HostCard(
                     modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
                 )
             }
-            if (details.rootfsTotalBytes != null) {
+            // マウントポイント別ディスク使用率(admin-panel#148、SSH+df由来)。ルートFSを先頭に
+            // 並べ、最大3件+「他N件」で省略表示する。取得失敗時(SSH未設定等)はrootfs
+            // (Proxmox API由来)の集約行にフォールバックし、それも無ければ読み込み中表示のみ。
+            val diskUsages = diskUsage.orEmpty().sortedBy { if (it.mountpoint == "/") 0 else 1 }
+            if (diskUsages.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.px)) {
+                    SpanText("ディスク使用率", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small))
+                    diskUsages.take(3).forEach { usage ->
+                        SpanText(
+                            "${usage.mountpoint} ${usage.percent}% " +
+                                "(${formatBytesAsGiB(usage.usedBytes)} / ${formatBytesAsGiB(usage.sizeBytes)})",
+                            modifier = Modifier.color(usagePercentColor(usage.percent)).fontSize(FontSize.Small)
+                        )
+                    }
+                    if (diskUsages.size > 3) {
+                        SpanText(
+                            "他${diskUsages.size - 3}件",
+                            modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                        )
+                    }
+                }
+            } else if (details.rootfsTotalBytes != null) {
                 SpanText(
                     "ディスク: ${formatBytesAsGiB(details.rootfsUsedBytes)} / ${formatBytesAsGiB(details.rootfsTotalBytes)}",
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+            } else if ("diskusage" in pendingCategories) {
+                SpanText(
+                    "ディスク使用率を読み込み中...",
                     modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
                 )
             }
@@ -582,7 +640,8 @@ private fun HostCard(
                             httpClient = httpClient,
                             accessToken = accessToken,
                             buildActions = buildActions,
-                            slots = vm.matchedNode?.let { nodeSlots[it.name] }
+                            slots = vm.matchedNode?.let { nodeSlots[it.name] },
+                            diskUsage = vm.matchedNode?.let { nodeDiskUsage[it.name] }
                         )
                     }
                 }
@@ -598,7 +657,8 @@ private fun VmSection(
     httpClient: HttpClient,
     accessToken: String,
     buildActions: (ServerStatus) -> ServerCardActions,
-    slots: HostSlotInventory? = null
+    slots: HostSlotInventory? = null,
+    diskUsage: List<DiskUsage>? = null
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.px)) {
         Row(
@@ -623,7 +683,8 @@ private fun VmSection(
                 httpClient = httpClient,
                 accessToken = accessToken,
                 actions = buildActions(node),
-                slots = slots
+                slots = slots,
+                diskUsage = diskUsage
             )
         }
     }

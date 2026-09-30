@@ -196,6 +196,59 @@ Memory Device
         assertFalse(isVirtualProductName("To Be Filled By O.E.M."))
     }
 
+    private val dfSample = """
+Filesystem       1-blocks        Used   Available Capacity Mounted on
+/dev/dm-0      41152817152  8123456789 30942940963      21% /
+/dev/nvme0n1p1   104857600    10485760   94371840      10% /boot/efi
+/dev/nvme1n1 1000204886016 500102443008 499002443008     51% /mnt/backup disk
+/dev/dm-0      41152817152  8123456789 30942940963      21% /
+""".trimIndent()
+
+    @Test
+    fun `parses df output skipping header and duplicate mountpoints`() {
+        val usages = parseDfUsage(dfSample)
+        // ヘッダ行は落ち、重複した"/"は先勝ちで1件になる
+        assertEquals(3, usages.size)
+
+        val root = usages[0]
+        assertEquals("/", root.mountpoint)
+        assertEquals(41152817152L, root.sizeBytes)
+        assertEquals(8123456789L, root.usedBytes)
+        assertEquals(30942940963L, root.availBytes)
+        assertEquals(21, root.percent)
+
+        // マウントポイントに空白が含まれる行は6列目以降を結合して扱う
+        val backup = usages[2]
+        assertEquals("/mnt/backup disk", backup.mountpoint)
+        assertEquals(1000204886016L, backup.sizeBytes)
+        assertEquals(51, backup.percent)
+    }
+
+    private val dfFallbackSample = """
+Filesystem     1-blocks     Used Available Capacity Mounted on
+udev           16328260        0  16328260       0% /dev
+tmpfs           3271364     6148   3265216       1% /run
+overlay       41152817152 8123456789 30942940963      21% /var/lib/docker/overlay2/abc/merged
+/dev/loop0      128835     128835         0      100% /snap/core20/1234
+/dev/mapper/pve-root 101703636 48123456  48401265       50% /
+/dev/mapper/pve-root 101703636 48123456  48401265       50% /var/lib/containerd/sandboxes/abc
+df: /mnt/broken: Permission denied
+""".trimIndent()
+
+    @Test
+    fun `drops pseudo filesystems and error lines from fallback df output`() {
+        // df -x 非対応環境向けの保険。tmpfs/overlay/snap等とエラー行は対象外で、
+        // 本体のルートのみ残る。同一デバイスの多重マウント(bind mount)も同じ使用率の
+        // ため落とす。PTY経由の改行多重化(\r\r\n)も同時に検証する。
+        val usages = parseDfUsage(dfFallbackSample.replace("\n", "\r\r\n"))
+        assertEquals(1, usages.size)
+        assertEquals("/", usages[0].mountpoint)
+        assertEquals(50, usages[0].percent)
+
+        // ヘッダ行やエラー行しかない出力は空(グレースフルに扱われる)
+        assertTrue(parseDfUsage("Filesystem 1-blocks Used Available Capacity Mounted on").isEmpty())
+    }
+
     @Test
     fun `parses real worker3 dmidecode memory output`() {
         // worker3実機のdmidecode 3.5出力(92バイト拡張レコード)。本番で空になった回帰検証用。

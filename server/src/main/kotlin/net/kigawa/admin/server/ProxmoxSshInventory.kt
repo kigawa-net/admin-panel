@@ -414,6 +414,161 @@ suspend fun fetchHostSlotInventory(hostName: String): HostSlotInventoryDto {
     )
 }
 
+/**
+ * マウントポイント別ディスク使用率(admin-panel#148)。
+ *
+ * Prometheusにnode-exporterがなく`node_filesystem_*`が存在しないこと、Proxmox APIが
+ * ルートマウントのrootfsしか返さないことから、時系列グラフではなくSSH経由のdfで
+ * 現在値を取得する。空きスロット調査(#156)とは独立した取得にしているため、フロントは
+ * スロット取得と並列に叩ける(低速なカテゴリが他を道連れにしない方針#158と同じ)。
+ */
+@Serializable
+data class DiskUsageDto(
+    /** マウントポイント(例: "/")。 */
+    val mountpoint: String,
+    /** ファイルシステム総容量(バイト)。 */
+    val sizeBytes: Long,
+    /** 使用中(バイト)。 */
+    val usedBytes: Long,
+    /** 空き(バイト)。 */
+    val availBytes: Long,
+    /** 使用率(0〜100の整数。dfのCapacity列から "%" を除いた値)。 */
+    val percent: Int
+)
+
+/**
+ * dfの除外対象。tmpfs/devtmpfsは実体を持たない疑似FS、squashfsはスナップの読み取り専用FS、
+ * overlayはコンテナランタイムが張る差分レイヤでホスト本体の使用率ではないため落とす。
+ * 対象はホスト直下のSSHなので任意だが、フロントに無意味な行を並べないための設定。
+ */
+private const val DF_COMMAND = "df -B1 -P -x tmpfs -x devtmpfs -x squashfs -x overlay"
+
+/** df -x が未対応のディストリ向けの保険(除外はパーサー側で行う)。 */
+private const val DF_COMMAND_FALLBACK = "df -B1 -P"
+
+/** df -x 非対応環境向けの保険として、パーサー側で落とす疑似FSのソース名。 */
+private val pseudoFsSources = setOf("tmpfs", "devtmpfs", "udev", "overlay", "squashfs", "proc", "sysfs", "cgroup2")
+
+/** df -x 非対応環境向けの保険として、実使用率に意味を持たない疑似FSのマウントポイント群。 */
+private val pseudoFsMountPoints = listOf("/proc", "/sys", "/snap")
+
+private const val DISK_USAGE_OVERALL_TIMEOUT_MS = 30_000L
+
+/**
+ * `df -B1 -P`の出力をパースする。
+ *
+ * - ヘッダ行・数値でない行(エラー行等)は読み飛ばす
+ * - `-P`でも同一マウントポイントが重複出力されることがあるため先勝ちで重複を落とす
+ * - 同一デバイスの多重マウント(k8sノードのbind mount等)は使用率が同じなので先勝ちで落とす
+ * - マウントポイントに空白が含まれることがあるため、6列目以降は結合して扱う
+ * - PTY経由の改行多重化はparseDmidecodeSlotsと同じ正規化で吸収する
+ */
+internal fun parseDfUsage(output: String): List<DiskUsageDto> {
+    val normalized = output.replace("\r\r\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    val result = mutableListOf<DiskUsageDto>()
+    val seenMountPoints = mutableSetOf<String>()
+    val seenSources = mutableSetOf<String>()
+    for (rawLine in normalized.lines()) {
+        val columns = rawLine.trim().split(Regex("\\s+"))
+        // 列: Filesystem / 1B-blocks / Used / Available / Capacity / Mounted on
+        if (columns.size < 6) continue
+        val sizeBytes = columns[1].toLongOrNull() ?: continue
+        val usedBytes = columns[2].toLongOrNull() ?: continue
+        val availBytes = columns[3].toLongOrNull() ?: continue
+        val percent = columns[4].removeSuffix("%").toIntOrNull() ?: continue
+        val mountPoint = columns.drop(5).joinToString(" ").trim()
+        if (mountPoint.isEmpty() || sizeBytes <= 0) continue
+        // df -x が効かない環境での保険(上のコマンドコメント参照)
+        if (columns[0] in pseudoFsSources) continue
+        if (pseudoFsMountPoints.any { mountPoint == it || mountPoint.startsWith("$it/") }) continue
+        if (!seenMountPoints.add(mountPoint)) continue
+        if (!seenSources.add(columns[0])) continue
+        result.add(
+            DiskUsageDto(
+                mountpoint = mountPoint,
+                sizeBytes = sizeBytes,
+                usedBytes = usedBytes,
+                availBytes = availBytes,
+                percent = percent
+            )
+        )
+    }
+    return result
+}
+
+/**
+ * SSHでdfを実行しマウントポイント別ディスク使用率を組み立てる。
+ * SSH到達・認証・コマンド失敗時は空リストを返す(グレースフルデグラデーション)。
+ */
+internal suspend fun fetchDiskUsageViaSsh(
+    label: String,
+    hostIp: String,
+    sshUser: String,
+    privateKey: String,
+    sudoPassword: String?
+): List<DiskUsageDto> {
+    return try {
+        withTimeoutOrNull(DISK_USAGE_OVERALL_TIMEOUT_MS) {
+            withSshKey(hostIp, sshUser, privateKey) { client ->
+                val output = try {
+                    execSshCommand(client, DF_COMMAND, sudoPassword)
+                } catch (e: IOException) {
+                    // df -x 未対応のディストリではexit!=0で落ちるため、素のdfで再試行し
+                    // 疑似FSの除外はパーサー側の保険で行う。コマンド都合の再試行なので
+                    // ここだけは例外を握りつぶして続行する。
+                    logger.warn("df -x failed for $label, retrying without exclusions: ${e.message}")
+                    execSshCommand(client, DF_COMMAND_FALLBACK, sudoPassword)
+                }
+                parseDfUsage(output)
+            }
+        } ?: emptyList()
+    } catch (e: Throwable) {
+        logger.warn("Disk usage failed for $label: ${e::class.qualifiedName}: ${e.message}")
+        emptyList()
+    }
+}
+
+/**
+ * 指定Proxmoxホストのディスク使用率を取得する。SSH未設定・ホスト不明・失敗時は空リスト。
+ */
+suspend fun fetchHostDiskUsage(hostName: String): List<DiskUsageDto> {
+    if (!isProxmoxSshConfigured) return emptyList()
+    val hostIp = proxmoxSshHosts[hostName] ?: return emptyList()
+    val key = proxmoxSshPrivateKey
+        ?.takeUnless { it.isBlank() || it.trim() == UNCONFIGURED_SENTINEL }
+        ?: return emptyList()
+    // df自体はroot不要だが、非rootでは一部マウントポイントが読めないことがあるため、
+    // スロット取得と同じ経路(sudo昇格あり)で実行して結果を揃える。
+    val sudoPassword = if (proxmoxSshUser == "root") null else usableSudoPassword()
+    return fetchDiskUsageViaSsh(
+        label = hostName,
+        hostIp = hostIp,
+        sshUser = proxmoxSshUser,
+        privateKey = key,
+        sudoPassword = sudoPassword
+    )
+}
+
+/**
+ * 指定k8sノードのディスク使用率を取得する。ノードIPはKubernetes APIのInternalIPで解決し、
+ * 認証情報はNODE_SSH_*を使う。IP不明・未設定・失敗時は空リスト。
+ */
+suspend fun fetchNodeDiskUsage(nodeName: String): List<DiskUsageDto> {
+    if (!isNodeSshConfigured) return emptyList()
+    val hostIp = getNodeInternalIp(nodeName) ?: return emptyList()
+    val key = System.getenv("NODE_SSH_PRIVATE_KEY")
+        ?.takeUnless { it.isBlank() || it.trim() == UNCONFIGURED_SENTINEL }
+        ?: return emptyList()
+    val sshUser = System.getenv("NODE_SSH_USER")?.takeIf { it.isNotBlank() } ?: "kigawa"
+    return fetchDiskUsageViaSsh(
+        label = nodeName,
+        hostIp = hostIp,
+        sshUser = sshUser,
+        privateKey = key,
+        sudoPassword = usableNodeSudoPassword()
+    )
+}
+
 /** k8sノード用SSH認証情報(NODE_SSH_PRIVATE_KEY)の設定有無。未設定の間はノード向け機能全体が無効。 */
 val isNodeSshConfigured: Boolean
     get() {

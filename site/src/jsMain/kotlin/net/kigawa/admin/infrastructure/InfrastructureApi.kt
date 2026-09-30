@@ -54,6 +54,21 @@ suspend fun fetchNodeSlots(client: HttpClient, accessToken: String, nodeName: St
     }.body()
 }
 
+/** ホストのマウントポイント別ディスク使用率を取得する(admin-panel#148)。
+ * SSH未設定時は503で失敗するため、呼び出し側は空のまま扱う。 */
+suspend fun fetchHostDiskUsage(client: HttpClient, accessToken: String, hostName: String): List<DiskUsage> {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/hosts/$hostName/disk-usage") {
+        bearerAuth(accessToken)
+    }.body()
+}
+
+/** k8sノードのマウントポイント別ディスク使用率を取得する(admin-panel#148)。 */
+suspend fun fetchNodeDiskUsage(client: HttpClient, accessToken: String, nodeName: String): List<DiskUsage> {
+    return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/nodes/$nodeName/disk-usage") {
+        bearerAuth(accessToken)
+    }.body()
+}
+
 /** リソース使用量グラフ用の時系列を取得する(issue #132)。 */
 suspend fun fetchResourceUsage(client: HttpClient, accessToken: String, rangeMinutes: Int): ResourceUsageResponse {
     return client.get("${InfrastructureApiConfig.baseUrl}/infrastructure/resource-usage?rangeMinutes=$rangeMinutes") {

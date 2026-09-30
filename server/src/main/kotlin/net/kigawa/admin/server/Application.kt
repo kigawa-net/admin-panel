@@ -764,6 +764,50 @@ fun Application.module() {
             call.respond(fetchNodeSlotInventory(nodeName))
         }
 
+        // マウントポイント別ディスク使用率(admin-panel#148)。Prometheusにnode-exporterが
+        // なく`node_filesystem_*`が存在しないため時系列グラフにはせず、SSHでdfを実行した
+        // 現在値を返す。空きスロット取得とは独立にしているため、フロントは両者を並列に
+        // 叩ける(#158の「低速なカテゴリが他を道連れにしない」方針と同じ)。
+        // 認証情報(Proxmox SSH)未設定の間は503を返すのみで、他機能には影響しない。
+        get("/api/infrastructure/hosts/{host}/disk-usage") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            if (!isProxmoxSshConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Proxmox SSH not configured"))
+                return@get
+            }
+            val hostName = call.parameters["host"]
+            if (hostName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                return@get
+            }
+            call.respond(fetchHostDiskUsage(hostName))
+        }
+
+        // K8sノードのマウントポイント別ディスク使用率(admin-panel#148)。ノードIPは
+        // Kubernetes APIのInternalIPで解決し、認証情報はNODE_SSH_*を使う。
+        // 未設定の間は503を返すのみで、他機能には影響しない。
+        get("/api/infrastructure/nodes/{node}/disk-usage") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            if (!isNodeSshConfigured) {
+                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Node SSH not configured"))
+                return@get
+            }
+            val nodeName = call.parameters["node"]
+            if (nodeName.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                return@get
+            }
+            call.respond(fetchNodeDiskUsage(nodeName))
+        }
+
         // インフラのリソース利用量の時系列(物理ホスト=Proxmox rrddata / K8sノード=Prometheus
         // cAdvisor)。グラフ表示用(issue #132)。rangeMinutes は15〜1440(既定60)で、グラフの
         // 描画点を抑えるためトラフィック時系列と同じく最大120点程度に丸める。

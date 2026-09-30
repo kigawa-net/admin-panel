@@ -19,7 +19,9 @@ import com.varabyte.kobweb.silk.components.forms.Button
 import com.varabyte.kobweb.silk.components.text.SpanText
 import io.ktor.client.HttpClient
 import kotlinx.browser.window
+import net.kigawa.admin.infrastructure.DiskUsage
 import net.kigawa.admin.infrastructure.HostSlotInventory
+import net.kigawa.admin.infrastructure.usagePercentColor
 import org.jetbrains.compose.web.css.Color
 import org.jetbrains.compose.web.css.px
 import org.jetbrains.compose.web.css.rgba
@@ -78,7 +80,9 @@ internal fun ServerCard(
     accessToken: String,
     actions: ServerCardActions,
     /** k8sノードのスロット情報。成立時のみ表示し、未取得・VM系では何も出さない。 */
-    slots: HostSlotInventory? = null
+    slots: HostSlotInventory? = null,
+    /** マウントポイント別ディスク使用率(admin-panel#148)。未取得時は行自体を出さない。 */
+    diskUsage: List<DiskUsage>? = null
 ) {
     var showPods by remember { mutableStateOf(false) }
     var pods by remember { mutableStateOf<List<PodSummary>?>(null) }
@@ -123,11 +127,28 @@ internal fun ServerCard(
         SpanText("CPU: ${server.cpuCapacity} コア / メモリ: ${formatMemoryCapacity(server.memoryCapacity)}")
         val cpuUsageText = formatCpuUsage(server.cpuUsageCores, server.cpuCapacity)
         val memoryUsageText = formatMemoryUsage(server.memoryUsageBytes, server.memoryCapacity)
-        if (cpuUsageText != null || memoryUsageText != null) {
-            SpanText(
-                "使用中 — CPU: ${cpuUsageText ?: "-"} / メモリ: ${memoryUsageText ?: "-"}",
-                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
-            )
+        // ディスク使用率(admin-panel#148、SSH+df由来)。スロットと同じ扱いで仮想マシン上の
+        // ノードでは抑止する。複数FSはマウントポイント別に見られないため、ルートFS(無ければ
+        // 先頭)の1件だけを載せる。
+        val diskEntry = if (slots?.virtualized == true) {
+            null
+        } else {
+            diskUsage?.firstOrNull { it.mountpoint == "/" } ?: diskUsage?.firstOrNull()
+        }
+        if (cpuUsageText != null || memoryUsageText != null || diskEntry != null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.px)) {
+                SpanText(
+                    "使用中 — CPU: ${cpuUsageText ?: "-"} / メモリ: ${memoryUsageText ?: "-"}",
+                    modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+                )
+                if (diskEntry != null) {
+                    SpanText(
+                        "/ ディスク: ${diskEntry.percent}%" +
+                            if (diskEntry.mountpoint != "/") " (${diskEntry.mountpoint})" else "",
+                        modifier = Modifier.color(usagePercentColor(diskEntry.percent)).fontSize(FontSize.Small)
+                    )
+                }
+            }
         }
         val podText = if (server.podCount != null && server.podCapacity != null) {
             "Pod: ${server.podCount} / ${server.podCapacity}"
