@@ -21,6 +21,8 @@ import io.ktor.client.HttpClient
 import kotlinx.browser.window
 import net.kigawa.admin.infrastructure.DiskUsage
 import net.kigawa.admin.infrastructure.HostSlotInventory
+import net.kigawa.admin.infrastructure.NodeResourceUsageCharts
+import net.kigawa.admin.infrastructure.NodeUsageUiState
 import net.kigawa.admin.infrastructure.usagePercentColor
 import org.jetbrains.compose.web.css.Color
 import org.jetbrains.compose.web.css.px
@@ -84,10 +86,15 @@ internal fun ServerCard(
     /** マウントポイント別ディスク使用率(admin-panel#148)。未取得時は行自体を出さない。 */
     diskUsage: List<DiskUsage>? = null,
     /** 未完了のカテゴリ集合("slots"/"diskusage")。物理専用ノードの読み込み中にだけ渡す(issue #166)。 */
-    pendingCategories: Set<String> = emptySet()
+    pendingCategories: Set<String> = emptySet(),
+    /** ノードごとのCPU/メモリ時系列の表示状態(issue #168)。null=データ未取得等で非表示。 */
+    usage: NodeUsageUiState? = null
 ) {
     var showPods by remember { mutableStateOf(false) }
     var pods by remember { mutableStateOf<List<PodSummary>?>(null) }
+    // グラフはノード数分常に描画するとCanvasが増えて重いため(#158の経緯)、展開したとき
+    // だけ描画する。ノードが変わったら閉じ直す。
+    var showUsage by remember(server.id) { mutableStateOf(false) }
 
     LaunchedEffect(showPods, server.id) {
         if (showPods) {
@@ -158,6 +165,22 @@ internal fun ServerCard(
                 "ディスク使用率を読み込み中...",
                 modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
             )
+        }
+        // ノードごとのCPU/メモリ時系列(issue #168)。ノードの状態・ハードウェア情報と
+        // 別セクションへ移動せず一か所で確認できるように、カード内に置いている。
+        // 展開時だけグラフを描画する(常時描画はCanvas増で重くなるため、#158の経緯)。
+        if (usage != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.px),
+                horizontalArrangement = Arrangement.spacedBy(8.px)
+            ) {
+                Button(onClick = { showUsage = !showUsage }) {
+                    SpanText(if (showUsage) "リソース推移を隠す" else "リソース推移を表示")
+                }
+            }
+            if (showUsage) {
+                NodeResourceUsageCharts(usage)
+            }
         }
         val podText = if (server.podCount != null && server.podCapacity != null) {
             "Pod: ${server.podCount} / ${server.podCapacity}"

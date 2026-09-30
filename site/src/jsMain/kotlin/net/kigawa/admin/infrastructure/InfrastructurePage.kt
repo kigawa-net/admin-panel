@@ -158,6 +158,36 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
     // のみで再実行されるようにする。
     val currentAccessToken by rememberUpdatedState(accessToken)
 
+    // リソース利用量の取得状態(issue #132/#168)。レスポンスに物理ホスト分とノード分が同時に
+    // 含まれるため、取得はここで1回だけ行い、上部のカードと各ノードカードへ同じ結果を配る
+    // (ノード数分のAPI呼び出しは増やさない)。refreshKeyでは取り直さない(既存の方針を維持)。
+    var usageRangeMinutes by remember { mutableStateOf(60) }
+    var resourceUsage by remember { mutableStateOf<ResourceUsageResponse?>(null) }
+    var resourceUsageLoading by remember { mutableStateOf(true) }
+    var resourceUsageError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(usageRangeMinutes) {
+        resourceUsageLoading = true
+        resourceUsageError = null
+        // 初回の読み込みだけ全体進捗に出す。レンジ変更の再取得では進捗バーを出さず、
+        // ページ上部の進捗パネルが出現/消失して表がずれるのを避ける(issue #166)。
+        val reportProgress = resourceUsage == null
+        if (reportProgress) reportSection("resourceusage", SectionLoadState.Loading)
+        try {
+            resourceUsage = fetchResourceUsage(httpClient, currentAccessToken, usageRangeMinutes)
+            if (reportProgress) reportSection("resourceusage", SectionLoadState.Loaded)
+        } catch (e: CancellationException) {
+            // レンジ変更・ページ離脱によるキャンセルは失敗ではない(次の取得側が記録する)
+        } catch (e: Throwable) {
+            // ktor-client-jsのfetch()失敗はExceptionをすり抜けて描画クラッシュを起こすことがある
+            // (他の取得と同じ対策)ためThrowableで受ける。失敗は空のまま扱い、進捗にだけ出す。
+            resourceUsage = null
+            resourceUsageError = e.message ?: "取得に失敗しました"
+            if (reportProgress) reportSection("resourceusage", SectionLoadState.Failed)
+        }
+        resourceUsageLoading = false
+    }
+
     val hostNames = (state as? InfrastructureUiState.Loaded)?.topology?.hosts?.map { it.name } ?: emptyList()
     /** 全ホストのVM一覧が出揃ったかどうか。standaloneノードの算出とpending解決の条件。 */
     val vmsSectionsDone = hostNames.all { "$it/vms" in completedSections }
@@ -210,6 +240,26 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
             .mapNotNull { (section, cardCategory) ->
                 if ("$nodeName/$section" in completedSections) null else cardCategory
             }.toSet()
+
+    /** 指定ノードへ渡すリソースグラフの表示状態(issue #168)。上部セクションと同じ取得結果を
+     * ノード名で紐付ける。取得前はloading=trueでグラフ、取得済みで系列が無いノードは
+     * グラフ自体を出さない(カードに無意味なボタンを並べないため)。 */
+    fun nodeUsage(nodeName: String): NodeUsageUiState? {
+        val loading = resourceUsageLoading
+        val series = resourceUsage?.k8sNodes?.get(nodeName)
+        val error = resourceUsageError
+        return if (loading || error != null || series != null) {
+            NodeUsageUiState(
+                nodeName = nodeName,
+                series = series,
+                rangeMinutes = usageRangeMinutes,
+                loading = loading,
+                error = error
+            )
+        } else {
+            null
+        }
+    }
 
     LaunchedEffect(refreshKey) {
         hostVms = emptyMap()
@@ -526,12 +576,15 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                 } else if (current.topology.hosts.isEmpty() && standaloneNodes != null && standaloneNodes.isEmpty()) {
                     SpanText("物理ホスト・ノードが見つかりませんでした", modifier = Modifier.color(Colors.Gray))
                 } else {
-                    // リソース利用量グラフ(issue #132)。ホスト一覧とは独立に読み込む。
-                    // ロード状態は全体進捗へ報告する(issue #166)。
+                    // リソース利用量グラフ(issue #132)。取得はページ側のLaunchedEffectで
+                    // ホスト一覧とは独立に1回だけ行い、ここでは物理ホスト分だけを描画する
+                    // (ノード分は各ノードカードへ移設、issue #168)。
                     ResourceUsageSection(
-                        httpClient = httpClient,
-                        accessToken = accessToken,
-                        onLoadState = { reportSection("resourceusage", it) }
+                        rangeMinutes = usageRangeMinutes,
+                        onRangeChange = { usageRangeMinutes = it },
+                        data = resourceUsage,
+                        loading = resourceUsageLoading,
+                        error = resourceUsageError
                     )
                     // グルーピングされたリソース利用量(issue #147)
                     GroupedResourceUsageSection(
@@ -548,6 +601,7 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                             diskUsage = hostDiskUsage[host.name],
                             nodeSlots = nodeSlots,
                             nodeDiskUsage = nodeDiskUsage,
+                            nodeUsage = ::nodeUsage,
                             pendingOperations = pendingOperations,
                             httpClient = httpClient,
                             accessToken = accessToken,
@@ -574,6 +628,9 @@ fun InfrastructurePage(accessToken: String, onBack: () -> Unit) {
                                 actions = buildActions(node),
                                 slots = nodeSlots[node.name],
                                 diskUsage = nodeDiskUsage[node.name],
+                                // ノードごとの時系列グラフ(issue #168)。物理専用ノードも
+                                // VM系ノードと同じ構造でカード内から確認できるようにする。
+                                usage = nodeUsage(node.name),
                                 // 物理専用ノードだけカード内にも読み込み中表示を出す(issue #166)。
                                 // VM系ノードはスロットが非表示になるため、読み込み行が出てすぐ
                                 // 消えるチラつきを避けて渡さない。
@@ -692,6 +749,8 @@ private fun HostCard(
     nodeSlots: Map<String, HostSlotInventory> = emptyMap(),
     /** 表示中k8sノードごとのディスク使用率。VM紐付けノードのカード表示に使う。 */
     nodeDiskUsage: Map<String, List<DiskUsage>> = emptyMap(),
+    /** 表示中k8sノードごとのリソースグラフ表示状態(issue #168)。VM紐付けノードのカードに渡す。 */
+    nodeUsage: (String) -> NodeUsageUiState? = { null },
     pendingOperations: Map<String, PendingOperationState>,
     httpClient: HttpClient,
     accessToken: String,
@@ -848,7 +907,9 @@ private fun HostCard(
                             accessToken = accessToken,
                             buildActions = buildActions,
                             slots = vm.matchedNode?.let { nodeSlots[it.name] },
-                            diskUsage = vm.matchedNode?.let { nodeDiskUsage[it.name] }
+                            diskUsage = vm.matchedNode?.let { nodeDiskUsage[it.name] },
+                            // VMとして動くK8sノードも、対応するカード内で時系列を見られるように(issue #168)
+                            usage = vm.matchedNode?.let { nodeUsage(it.name) }
                         )
                     }
                 }
@@ -865,7 +926,9 @@ private fun VmSection(
     accessToken: String,
     buildActions: (ServerStatus) -> ServerCardActions,
     slots: HostSlotInventory? = null,
-    diskUsage: List<DiskUsage>? = null
+    diskUsage: List<DiskUsage>? = null,
+    /** ノード別のリソースグラフ表示状態(issue #168)。未取得・対象外のときはnull。 */
+    usage: NodeUsageUiState? = null
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.px)) {
         Row(
@@ -891,7 +954,8 @@ private fun VmSection(
                 accessToken = accessToken,
                 actions = buildActions(node),
                 slots = slots,
-                diskUsage = diskUsage
+                diskUsage = diskUsage,
+                usage = usage
             )
         }
     }

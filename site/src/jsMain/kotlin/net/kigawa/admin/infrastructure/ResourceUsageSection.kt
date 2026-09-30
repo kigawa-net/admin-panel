@@ -43,46 +43,45 @@ private val RANGE_OPTIONS = listOf(
 private const val CPU_COLOR = "#2A78D6"
 private const val MEMORY_COLOR = "#008300"
 
+/** 期間選択肢のラベル(issue #168でノードカード側からも使う)。 */
+private fun rangeLabel(rangeMinutes: Int): String =
+    RANGE_OPTIONS.firstOrNull { it.first == rangeMinutes }?.second ?: "${rangeMinutes}分"
+
+/**
+ * ノードカードへ渡す、ノード別リソースグラフの表示状態(issue #168)。
+ * レスポンスには全ノード分が同時に含まれるため、取得はページ側で1回だけ行い、
+ * ノード数分のAPI呼び出しは増やさない。seriesがnullのときはグラフを出さない。
+ *
+ * @param nodeName グラフのcanvas idに含めるノード名(複数カード展開時のid衝突回避)
+ */
+data class NodeUsageUiState(
+    val nodeName: String,
+    val series: K8sNodeUsageSeries?,
+    val rangeMinutes: Int,
+    val loading: Boolean,
+    val error: String?
+)
+
 /**
  * インフラのリソース利用量グラフ(issue #132)。
- * 物理ホスト(Proxmox rrddata)とK8sノード(Prometheus cAdvisor)それぞれのCPU/メモリを、
- * 時間範囲セレクタ(1時間/6時間/24時間)付きで表示する。
+ * 物理ホスト(Proxmox rrddata)のCPU/メモリを、時間範囲セレクタ(1時間/6時間/24時間)付きで
+ * 表示する。K8sノードごとのグラフはノードの詳細カードへ移設した(issue #168)ため、
+ * ノード分は[NodeResourceUsageCharts]が各ノードカード内で描画する。
  *
- * @param onLoadState 読み込み状態を親ページの全体進捗へ伝える(issue #166)。
+ * レスポンスに物理ホスト分とノード分が同時に含まれるため、取得はページ側で1回だけ行い、
+ * ここでは物理ホスト分の描画と期間選択の受け持ちだけを行う。
+ *
+ * @param data ページ側で取得したレスポンス。取得前・取得失敗時はnull。
+ * @param onRangeChange 期間選択の変更をページ側の取得状態へ伝える。
  */
 @Composable
 fun ResourceUsageSection(
-    httpClient: HttpClient,
-    accessToken: String,
-    onLoadState: (SectionLoadState) -> Unit = {}
+    rangeMinutes: Int,
+    onRangeChange: (Int) -> Unit,
+    data: ResourceUsageResponse?,
+    loading: Boolean,
+    error: String?
 ) {
-    var rangeMinutes by remember { mutableStateOf(60) }
-    var data by remember { mutableStateOf<ResourceUsageResponse?>(null) }
-    var loading by remember { mutableStateOf(true) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(rangeMinutes) {
-        loading = true
-        error = null
-        // 初回の読み込みだけ全体進捗に出す。レンジ変更の再取得では進捗バーを出さず、
-        // ページ上部の進捗パネルが出現/消失して表がずれるのを避ける(issue #166)。
-        val reportProgress = data == null
-        if (reportProgress) onLoadState(SectionLoadState.Loading)
-        try {
-            data = fetchResourceUsage(httpClient, accessToken, rangeMinutes)
-            if (reportProgress) onLoadState(SectionLoadState.Loaded)
-        } catch (e: CancellationException) {
-            // レンジ変更・アンマウントによるキャンセルは失敗ではない(次の取得側が記録する)
-        } catch (e: Throwable) {
-            // ブラウザのfetch()失敗はExceptionをすり抜けて描画クラッシュを起こすことがあるため
-            // (InfrastructurePage側と同じ対策)Throwableで受ける。
-            error = e.message ?: "取得に失敗しました"
-            data = null
-            if (reportProgress) onLoadState(SectionLoadState.Failed)
-        }
-        loading = false
-    }
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -97,7 +96,7 @@ fun ResourceUsageSection(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            SpanText("リソース利用量", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium))
+            SpanText("物理ホストのリソース利用量", modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Medium))
             Row(horizontalArrangement = Arrangement.spacedBy(8.px)) {
                 RANGE_OPTIONS.forEach { (minutes, label) ->
                     val active = rangeMinutes == minutes
@@ -105,7 +104,7 @@ fun ResourceUsageSection(
                         label,
                         modifier = Modifier
                             .padding(leftRight = 10.px, topBottom = 6.px)
-                            .onClick { rangeMinutes = minutes }
+                            .onClick { onRangeChange(minutes) }
                             .cursor(if (active) Cursor.Default else Cursor.Pointer)
                             .borderRadius(6.px)
                             .let { if (active) it.backgroundColor(rgba(42, 120, 214, 0.15)) else it }
@@ -129,10 +128,6 @@ fun ResourceUsageSection(
             data != null -> {
                 val response = data!!
                 if (response.physicalHosts.isNotEmpty()) {
-                    SpanText(
-                        "物理ホスト",
-                        modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small)
-                    )
                     response.physicalHosts.entries.sortedBy { it.key }.forEach { (hostName, series) ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -163,45 +158,77 @@ fun ResourceUsageSection(
                         }
                     }
                 }
-                if (response.k8sNodes.isNotEmpty()) {
+                // K8sノードごとのグラフはノードの詳細カードへ移設した(issue #168)。
+                // ここでは物理ホスト分だけを描画する。
+                if (response.physicalHosts.isEmpty()) {
                     SpanText(
-                        "K8sノード",
-                        modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small).padding(top = 4.px)
-                    )
-                    response.k8sNodes.entries.sortedBy { it.key }.forEach { (nodeName, series) ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(16.px)
-                        ) {
-                            UsageChartCard(
-                                title = "$nodeName · CPU",
-                                points = series.cpuCores,
-                                fixedMax = series.cpuCapacityCores?.toDouble(),
-                                color = CPU_COLOR,
-                                canvasId = "usage-kcpu-$nodeName-$rangeMinutes",
-                                formatValue = { v -> "${round(v * 100) / 100}コア" },
-                                capacityValue = series.cpuCapacityCores?.toDouble(),
-                                capacityLabel = series.cpuCapacityCores?.let { "容量 $it コア" }
-                            )
-                            UsageChartCard(
-                                title = "$nodeName · メモリ",
-                                points = series.memGiB,
-                                fixedMax = series.memCapacityGiB,
-                                color = MEMORY_COLOR,
-                                canvasId = "usage-kmem-$nodeName-$rangeMinutes",
-                                formatValue = { v -> "${round(v * 10) / 10} GiB" },
-                                capacityValue = series.memCapacityGiB,
-                                capacityLabel = series.memCapacityGiB?.let { "容量 ${round(it * 10) / 10} GiB" }
-                            )
-                        }
-                    }
-                }
-                if (response.physicalHosts.isEmpty() && response.k8sNodes.isEmpty()) {
-                    SpanText(
-                        "リソース使用量データがありません",
+                        "物理ホストのリソース使用量データがありません",
                         modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * ノードカード内に表示するノード別CPU/メモリ時系列(issue #168)。
+ * ページ上部に並んでいたノード個別のグラフを、ノードの状態・ハードウェア情報と
+ * 一か所で確認できるようにするためServerCardから使う。期間はページ上部のセレクタと
+ * 連動させ、取得をノード数分増やさない。
+ *
+ * Canvas描画は呼び出し側(ノードカード)が展開したときだけ行われる。
+ */
+@Composable
+fun NodeResourceUsageCharts(usage: NodeUsageUiState) {
+    val series = usage.series
+    val loadError = usage.error
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.px),
+        verticalArrangement = Arrangement.spacedBy(6.px)
+    ) {
+        SpanText(
+            "リソース推移 (${rangeLabel(usage.rangeMinutes)})",
+            modifier = Modifier.fontWeight(FontWeight.Bold).fontSize(FontSize.Small)
+        )
+        when {
+            usage.loading -> SpanText(
+                "リソース使用量を読み込み中...",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
+            loadError != null -> SpanText(
+                "リソース使用量を取得できませんでした: $loadError",
+                modifier = Modifier.color(Colors.Red).fontSize(FontSize.Small)
+            )
+            series == null -> SpanText(
+                "リソース使用量データがありません",
+                modifier = Modifier.color(Colors.Gray).fontSize(FontSize.Small)
+            )
+            else -> Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.px)
+            ) {
+                UsageChartCard(
+                    title = "CPU",
+                    points = series.cpuCores,
+                    fixedMax = series.cpuCapacityCores?.toDouble(),
+                    color = CPU_COLOR,
+                    // ノード名と期間を含めて、複数カードを展開したときのid衝突を避ける。
+                    canvasId = "usage-kcpu-${usage.nodeName}-${usage.rangeMinutes}",
+                    formatValue = { v -> "${round(v * 100) / 100}コア" },
+                    capacityValue = series.cpuCapacityCores?.toDouble(),
+                    capacityLabel = series.cpuCapacityCores?.let { "容量 $it コア" }
+                )
+                UsageChartCard(
+                    title = "メモリ",
+                    points = series.memGiB,
+                    fixedMax = series.memCapacityGiB,
+                    color = MEMORY_COLOR,
+                    canvasId = "usage-kmem-${usage.nodeName}-${usage.rangeMinutes}",
+                    formatValue = { v -> "${round(v * 10) / 10} GiB" },
+                    capacityValue = series.memCapacityGiB,
+                    capacityLabel = series.memCapacityGiB?.let { "容量 ${round(it * 10) / 10} GiB" }
+                )
             }
         }
     }
