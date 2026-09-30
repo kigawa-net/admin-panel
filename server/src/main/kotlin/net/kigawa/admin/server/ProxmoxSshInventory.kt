@@ -148,15 +148,19 @@ internal fun parseDmidecodeSlotRecord(lines: List<String>): PciSlotInfo? {
 
 /** dmidecode -t slot 出力全体をパースする。 */
 internal fun parseDmidecodeSlots(output: String): List<PciSlotInfo> {
-    val records = output.split(Regex("\\n\\s*\\n")).map { it.lines() }
+    // SSH PTY(+sudo use_pty)経由では改行が多重化(\r\n\r\n等)されることが実機で
+    // 確認されており、そのままだと空行だらけでレコード判定が崩れる。先に正規化する。
+    val normalized = output.replace("\r\r\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    val records = normalized.split(Regex("\\n\\s*\\n")).map { it.lines() }
     return records.mapNotNull { parseDmidecodeSlotRecord(it) }
 }
 
 /** dmidecode -t memory のMemory Deviceレコード1件をパースする。 */
 internal fun parseDmidecodeMemoryRecord(lines: List<String>): MemorySlotInfo? {
     // DMI type 17 (Memory Device)のレコードのみ対象。-t memoryにはArray情報等の
-    // 他レコードも混ざるため、2行目の種別で判定する。
-    if (lines.getOrNull(1)?.trim() != "Memory Device") return null
+    // 他レコードも混ざるため、種別行で判定する。SSH PTY経由では改行が二重化
+    // (\r\n)されて空行が混じることが実機で確認されたため、位置ではなく内容で判定する。
+    if (lines.none { it.trim() == "Memory Device" }) return null
     fun field(prefix: String): String? =
         lines.firstOrNull { it.trim().startsWith(prefix) }
             ?.trim()?.removePrefix(prefix)?.trim()?.takeIf { it.isNotEmpty() }
@@ -189,7 +193,9 @@ internal fun parseMemorySizeMb(raw: String): Long? {
 
 /** dmidecode -t memory 出力全体をパースする。 */
 internal fun parseDmidecodeMemory(output: String): List<MemorySlotInfo> {
-    val records = output.split(Regex("\\n\\s*\\n")).map { it.lines() }
+    // 改行多重化への対処はparseDmidecodeSlotsと同様。
+    val normalized = output.replace("\r\r\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    val records = normalized.split(Regex("\\n\\s*\\n")).map { it.lines() }
     return records.mapNotNull { parseDmidecodeMemoryRecord(it) }
 }
 

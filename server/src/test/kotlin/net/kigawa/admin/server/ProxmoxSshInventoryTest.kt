@@ -166,6 +166,19 @@ Memory Device
     }
 
     @Test
+    fun `parses memory with PTY-doubled line breaks`() {
+        // SSH PTY(+sudo use_pty)経由では改行が\r\r\nに二重化されることを
+        // 実機odダンプで確認。このままだと空行だらけでレコード判定が崩れるため、
+        // パーサー入口で正規化する。位置ではなく内容で種別判定することと合わせた回帰検証。
+        val ptyOutput = "Handle 0x0013, DMI type 17, 92 bytes\r\r\nMemory Device\r\r\n\tSize: 16 GB\r\r\n\tLocator: DIMM_A1\r\r\n\tType: DDR4\r\r\n\tSpeed: 2667 MT/s\r\r\n"
+        val slots = parseDmidecodeMemory(ptyOutput)
+        assertEquals(1, slots.size)
+        assertEquals("DIMM_A1", slots[0].locator)
+        assertEquals(16384L, slots[0].sizeMb)
+        assertFalse(slots[0].free)
+    }
+
+    @Test
     fun `detects virtualized product names`() {
         assertTrue(isVirtualProductName("KVM"))
         assertTrue(isVirtualProductName("Standard PC (QEMU + KVM)"))
