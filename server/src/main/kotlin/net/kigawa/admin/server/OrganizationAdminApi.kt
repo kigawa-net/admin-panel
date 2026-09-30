@@ -30,8 +30,10 @@ private const val DEFAULT_TOKEN_TTL_SECONDS = 300L
 /**
  * 組織管理機能もユーザー管理機能([KeycloakAdminApi])と同様、専用のサービスアカウント
  * (client_credentials グラント)経由でKeycloak Admin REST APIを叩く。Organizationsは
- * kigawa-net realm(一般利用者向け)で有効化されているため、manage realm用のサービス
- * アカウントとは別のクライアントを使う(Keycloak側の設定はこのリポジトリの範囲外)。
+ * kigawa-net realm(一般利用者向け)で有効化されているため、kigawa-net realmの
+ * サービスアカウント admin-panel-org-service を使う。ユーザー管理機能も同じクライアントを
+ * 利用するが、環境変数(KEYCLOAK_ORG_API_*)は分けて設定している
+ * (Keycloak側の設定はこのリポジトリの範囲外)。
  */
 private val orgApiClientId = System.getenv("KEYCLOAK_ORG_API_CLIENT_ID")
 private val orgApiClientSecret = System.getenv("KEYCLOAK_ORG_API_CLIENT_SECRET")

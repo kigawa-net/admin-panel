@@ -29,7 +29,6 @@ import org.jetbrains.compose.web.css.*
 fun HomePage() {
     val ctx = rememberPageContext()
     AuthGuard { state, logout, provider ->
-        // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い
         var currentOrgId by remember { mutableStateOf<String?>(localStorage.getItem("selectedOrgId")) }
         val onOrgChange: (String?) -> Unit = { orgId ->
             currentOrgId = orgId
@@ -40,7 +39,7 @@ fun HomePage() {
             }
         }
         AppShell(
-            isAdmin = true,
+            isAdmin = state.isAdmin,
             accessToken = state.accessToken,
             currentOrgId = currentOrgId,
             onOrgChange = onOrgChange,
@@ -48,7 +47,7 @@ fun HomePage() {
         ) {
             DashboardPage(
                 username = state.username,
-                isAdmin = true,
+                isAdmin = state.isAdmin,
                 onLogout = logout,
                 onOpenNetworkMap = { ctx.router.navigateTo("/network-map") },
                 onOpenUsers = { ctx.router.navigateTo("/users") },

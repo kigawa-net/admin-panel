@@ -28,7 +28,8 @@ import org.jetbrains.compose.web.css.rgba
 /**
  * Shared Keycloak auth handling for every route: shows the login screen when unauthenticated,
  * surfaces auth errors, and (when [requireAdmin]) bounces non-admins back to "/" instead of
- * rendering [content]. Each `@Page` wraps its body in this instead of duplicating the auth dance.
+ * rendering [content]. 管理者は userinfo のロール(admin-panelのadminロール)で判定する。
+ * Each `@Page` wraps its body in this instead of duplicating the auth dance.
  */
 @Composable
 fun AuthGuard(
@@ -68,10 +69,20 @@ fun AuthGuard(
             LoginPage(isLoading = true, onLogin = {})
         }
         is AuthState.Authenticated -> {
-            // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い。
-            // 実際のアクセス制御はサーバー側のRBACで行う。
-            if (requireAdmin) {
-                content(state, { authProvider.logoutAll() }, authProvider)
+            // kigawa-net realmは誰でもセルフ登録できるため、認証済みだけでは管理者に
+            // しない。管理者専用ページは userinfo のロール(admin-panelのadminロール)が
+            // 確認できたユーザー(state.isAdmin)のみ表示し、それ以外はダッシュボードへ
+            // 戻す。表示上の判定だけで、最終的な権限はサーバー側のRBACでも再判定する。
+            if (requireAdmin && !state.isAdmin) {
+                LaunchedEffect(Unit) {
+                    ctx.router.navigateTo("/")
+                }
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    SpanText("管理者権限が必要です")
+                }
             } else {
                 content(state, { authProvider.logoutAll() }, authProvider)
             }

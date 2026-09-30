@@ -39,9 +39,10 @@ fun App(authProvider: KeycloakAuthProvider) {
             LoginScreen(isLoading = true, onLogin = {})
         }
         is AuthState.Authenticated -> {
-            // 単一レルム(manage)に統合されたため、認証済みなら常に管理者扱い。
-            // 実際のアクセス制御はサーバー側のRBACで行う。
-            val isAdmin = true
+            // kigawa-net realmは誰でもセルフ登録できるため、認証済みだけでは管理者にしない。
+            // 管理者は userinfo のロール(admin-panelのadminロール)で判定し、
+            // ロールが確認できない間は非管理者(安全側)とする。
+            val isAdmin = state.isAdmin
             when (currentScreen) {
                 AppScreen.Dashboard -> DashboardScreen(
                     username = state.username,

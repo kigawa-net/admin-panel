@@ -16,11 +16,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * Keycloakの単一レルム(manage)での認証を扱う。
- * 以前は管理用realm(manage)とpublic用realm(kigawa-net)の2つがあったが、
- * issue #133で単一レルムに統合した。アクセス制御の境界はサーバー側(RBAC)で行う。
+ * Keycloakのkigawa-netレルムでの認証を扱う。
+ * issue #155で管理用realm(manage)からkigawa-netへ移行した。kigawa-net realmは誰でも
+ * セルフ登録できるため、管理者判定は userinfo に載るロール(admin-panelクライアントの
+ * admin ロール)の有無で行い、ロールが確認できない間は非管理者(安全側)として扱う。
+ * 実際のアクセス制御の境界はサーバー側(RBAC)でも併せて行う。
  */
 @Serializable
 data class TokenResponse(
@@ -36,12 +42,47 @@ data class UserInfoResponse(
     @SerialName("sub") val sub: String,
     @SerialName("preferred_username") val preferredUsername: String? = null,
     @SerialName("email") val email: String? = null,
-    @SerialName("name") val name: String? = null
+    @SerialName("name") val name: String? = null,
+    // ロールはKeycloakのマッパー設定により形式が揺れるため、あえて型を固定しない
+    @SerialName("roles") val roles: JsonElement? = null,
+    @SerialName("realm_access") val realmAccess: JsonElement? = null,
+    @SerialName("resource_access") val resourceAccess: JsonElement? = null
 )
+
+/**
+ * userinfoのロール表現に admin が含まれるか判定する。
+ * User Client Roleマッパー(multivalued)はトップレベルの roles に配列で出る想定だが、
+ * realm_access.roles / resource_access["admin-panel"].roles 形式にも対応するため、
+ * 配列・オブジェクト・文字列のいずれでも受ける。
+ * ロールが無い・形式が不明な場合は false(非管理者・安全側)にする。
+ */
+private fun JsonElement?.containsAdminRole(): Boolean = when (this) {
+    is JsonArray -> any { it is JsonPrimitive && it.content == "admin" }
+    is JsonObject -> keys.any { it == "admin" } || values.any { it.containsAdminRole() }
+    is JsonPrimitive -> content == "admin"
+    else -> false
+}
+
+/**
+ * userinfo全体から管理者(adminロール保有)を判定する。
+ * kigawa-net realmは誰でもセルフ登録できるため、ロール欠落時を管理者扱いにすると
+ * 全員が管理者になってしまう。必ず「ロールが確認できた場合のみ」true を返す。
+ */
+private fun UserInfoResponse.hasAdminRole(): Boolean {
+    if (roles != null && roles.containsAdminRole()) return true
+    if (realmAccess != null && realmAccess.containsAdminRole()) return true
+    // resource_accessはクライアントIDごとの入れ子なので、admin-panelクライアント分のみ見る
+    val adminPanelAccess = (resourceAccess as? JsonObject)?.get("admin-panel")
+    return adminPanelAccess != null && adminPanelAccess.containsAdminRole()
+}
 
 interface KeycloakAuthConfig {
     val serverUrl: String
     val clientId: String
+
+    // issue #155で管理用realm(manage)からkigawa-netへ移行した
+    val realm: String
+        get() = "kigawa-net"
 }
 
 object DefaultKeycloakConfig : KeycloakAuthConfig {
@@ -49,9 +90,9 @@ object DefaultKeycloakConfig : KeycloakAuthConfig {
     override val clientId: String = "admin-panel"
 }
 
-private fun KeycloakAuthConfig.authUrl() = "$serverUrl/realms/manage/protocol/openid-connect/auth"
-private fun KeycloakAuthConfig.tokenUrl() = "$serverUrl/realms/manage/protocol/openid-connect/token"
-private fun KeycloakAuthConfig.userInfoUrl() = "$serverUrl/realms/manage/protocol/openid-connect/userinfo"
+private fun KeycloakAuthConfig.authUrl() = "$serverUrl/realms/$realm/protocol/openid-connect/auth"
+private fun KeycloakAuthConfig.tokenUrl() = "$serverUrl/realms/$realm/protocol/openid-connect/token"
+private fun KeycloakAuthConfig.userInfoUrl() = "$serverUrl/realms/$realm/protocol/openid-connect/userinfo"
 
 expect fun createHttpClient(): HttpClient
 
@@ -70,7 +111,9 @@ data class PersistedSession(
     val username: String,
     val accessToken: String,
     val refreshToken: String?,
-    val expiresAt: Long
+    val expiresAt: Long,
+    // 最後に userinfo で確認できた管理者フラグ。取得できない間は false(安全側)。
+    val isAdmin: Boolean = false
 )
 
 /**
@@ -135,7 +178,8 @@ class KeycloakAuthProvider(
         if (session != null) {
             _authState.value = AuthState.Authenticated(
                 username = session.username,
-                accessToken = session.accessToken
+                accessToken = session.accessToken,
+                isAdmin = session.isAdmin
             )
             scheduleAutoRefresh()
         }
@@ -189,18 +233,29 @@ class KeycloakAuthProvider(
                 }
             ).body<TokenResponse>()
 
+            // リフレッシュ成功時に userinfo から管理者フラグを最新化する。
+            // 取得に失敗してもトークン更新自体は有効なので、保存済みの値を維持する。
+            val updatedAdmin = try {
+                httpClient.get(config.userInfoUrl()) {
+                    bearerAuth(tokenResponse.accessToken)
+                }.body<UserInfoResponse>().hasAdminRole()
+            } catch (e: Exception) {
+                session.isAdmin
+            }
+
             tokenStorage.save(
                 PersistedSession(
                     username = session.username,
                     accessToken = tokenResponse.accessToken,
                     refreshToken = tokenResponse.refreshToken ?: refreshToken,
-                    expiresAt = currentTimeMillis() + tokenResponse.expiresIn * 1000L
+                    expiresAt = currentTimeMillis() + tokenResponse.expiresIn * 1000L,
+                    isAdmin = updatedAdmin
                 )
             )
 
             val current = _authState.value
             if (current is AuthState.Authenticated) {
-                _authState.value = current.copy(accessToken = tokenResponse.accessToken)
+                _authState.value = current.copy(accessToken = tokenResponse.accessToken, isAdmin = updatedAdmin)
             }
             true
         } catch (e: Exception) {
@@ -260,13 +315,17 @@ class KeycloakAuthProvider(
                         username = displayName,
                         accessToken = tokenResponse.accessToken,
                         refreshToken = tokenResponse.refreshToken,
-                        expiresAt = currentTimeMillis() + tokenResponse.expiresIn * 1000L
+                        expiresAt = currentTimeMillis() + tokenResponse.expiresIn * 1000L,
+                        // kigawa-net realmは誰でもセルフ登録できるため、ロールが確認できた
+                        // 場合のみ管理者とする(無い間は非管理者・安全側)
+                        isAdmin = userInfo.hasAdminRole()
                     )
                 )
 
                 _authState.value = AuthState.Authenticated(
                     username = displayName,
-                    accessToken = tokenResponse.accessToken
+                    accessToken = tokenResponse.accessToken,
+                    isAdmin = userInfo.hasAdminRole()
                 )
                 scheduleAutoRefresh()
             } catch (e: Exception) {
@@ -293,6 +352,11 @@ class KeycloakAuthProvider(
 sealed class AuthState {
     object Unauthenticated : AuthState()
     object Loading : AuthState()
-    data class Authenticated(val username: String, val accessToken: String) : AuthState()
+    data class Authenticated(
+        val username: String,
+        val accessToken: String,
+        // userinfoのロール(admin-panelのadminロール)で判定。確認できない間は false(安全側)
+        val isAdmin: Boolean = false
+    ) : AuthState()
     data class Error(val message: String) : AuthState()
 }

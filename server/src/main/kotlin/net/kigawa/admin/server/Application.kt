@@ -7,6 +7,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientCon
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -42,9 +43,13 @@ import io.ktor.server.routing.put
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 /** Internal cluster DNS for the kube-prometheus-stack Prometheus service (see kigawa01/k8s-system). */
@@ -52,10 +57,12 @@ internal val prometheusUrl =
     System.getenv("PROMETHEUS_URL") ?: "http://prometheus-operated.prometheus.svc.cluster.local:9090"
 
 /**
- * 管理用realm(manage)のトークンを検証する。
- * 以前は public 用 realm(kigawa-net) もあったが、issue #133 で単一レルムに統合した。 */
+ * kigawa-net realm(issue #155で管理用realm manageから移行)のトークンを検証するuserinfo。
+ * ロールの載り方がKeycloakのマッパー設定で揺れるため、複数形式に対応した
+ * adminロール判定を併用する。
+ */
 private val adminRealmUserInfoUrl = System.getenv("KEYCLOAK_ADMIN_USERINFO_URL")
-    ?: "https://user.kigawa.net/realms/manage/protocol/openid-connect/userinfo"
+    ?: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
 
 /**
  * Expected `aud` claim on GitHub Actions OIDC tokens presented to the CI-facing GitHub App
@@ -380,8 +387,9 @@ fun Application.module() {
             call.respond(deletePod(namespace, name))
         }
 
-        // ユーザー管理(manage realmのみ)。Keycloak Admin REST APIを専用サービスアカウント
-        // (client_credentials)経由で呼ぶ。サービスアカウント未設定の場合は503を返す。
+        // ユーザー管理(kigawa-net realm・adminロールの管理者のみ)。Keycloak Admin REST APIを
+        // 専用サービスアカウント(client_credentials)経由で呼ぶ。
+        // サービスアカウント未設定の場合は503を返す。
         get("/api/users") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
             if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
@@ -473,9 +481,10 @@ fun Application.module() {
             call.respond(resetKeycloakUserPassword(httpClient, userId, request.newPassword, request.temporary))
         }
 
-        // 組織管理(対象データはkigawa-net realm)。全組織の一覧・削除はmanage realmの管理者限定、
-        // 作成・自分が所属する組織の閲覧・メンバー管理はkigawa-net realmの一般ユーザーも行える。
-        // Keycloak Organizations REST APIを専用サービスアカウント(client_credentials)経由で呼ぶ。
+        // 組織管理(対象データはkigawa-net realm)。全組織の一覧・削除はadminロールの
+        // 管理者限定、作成・自分が所属する組織の閲覧・メンバー管理はkigawa-net realmの
+        // 一般ユーザーも行える。Keycloak Organizations REST APIを専用サービスアカウント
+        // (client_credentials)経由で呼ぶ。
         get("/api/organizations") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
             if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
@@ -493,7 +502,7 @@ fun Application.module() {
             }
         }
 
-        // 組織の作成はmanage realm・public(kigawa-net)realmどちらのユーザーも行える。
+        // 組織の作成はkigawa-net realmにログインしているユーザーなら誰でも行える。
         // 一般ユーザーが作成した場合は、作成者自身を自動的にその組織のメンバーとして登録する
         // (でなければ作成した本人がその組織を一覧にも出せず操作もできなくなってしまう)。
         post("/api/organizations") {
@@ -1059,25 +1068,60 @@ fun Application.module() {
     }
 }
 
-/** 管理用realm(manage)のトークンのみ許可。サーバー管理(閲覧・操作)エンドポイントで使う。 */
-private suspend fun isValidAdminToken(client: HttpClient, token: String): Boolean =
-    checkUserInfo(client, adminRealmUserInfoUrl, token)
+/**
+ * kigawa-net realmのトークンのうち、admin-panelクライアントの admin ロールを持つ
+ * 管理者のみ許可。サーバー管理(閲覧・操作)エンドポイントで使う。
+ * kigawa-net realmは誰でもセルフ登録できる(registrationAllowed=true)ため、
+ * ロールが確認できないトークンは管理者扱いにしない(全員admin化の防止)。
+ */
+private suspend fun isValidAdminToken(client: HttpClient, token: String): Boolean {
+    val userInfo = fetchUserInfo(client, adminRealmUserInfoUrl, token) ?: return false
+    return userInfoHasAdminRole(userInfo)
+}
 
-/** 管理用realm(manage)のトークンを許可。ダッシュボード系エンドポイントで使う。
- * 以前は public 用 realm も許可していたが、issue #133 で単一レルム(manage)に統合したため
- * 実質的に isValidAdminToken と同じ挙動になる。 */
+/** kigawa-net realmの有効なトークン(ロール不問)。ダッシュボード系・一般ユーザー向け
+ * エンドポイントで使う。以前は管理用realm(manage)も別途許可していたが、
+ * issue #155でkigawa-netに統合したため、kigawa-netの有効トークン判定のみとなる。 */
 private suspend fun isValidAnyToken(client: HttpClient, token: String): Boolean =
-    checkUserInfo(client, adminRealmUserInfoUrl, token)
+    fetchUserInfo(client, adminRealmUserInfoUrl, token) != null
 
-private suspend fun checkUserInfo(client: HttpClient, userInfoUrl: String, token: String): Boolean {
+/** userinfoに有効なトークンならその応答本文を、無効ならnullを返す。 */
+private suspend fun fetchUserInfo(client: HttpClient, userInfoUrl: String, token: String): String? {
     return try {
         val response: HttpResponse = client.get(userInfoUrl) {
             header(HttpHeaders.Authorization, "Bearer $token")
         }
-        response.status == HttpStatusCode.OK
+        if (response.status == HttpStatusCode.OK) response.bodyAsText() else null
     } catch (e: Exception) {
+        null
+    }
+}
+
+/** userinfo応答(JSON)から admin ロールの有無を判定する。 */
+private fun userInfoHasAdminRole(userInfoBody: String): Boolean {
+    return try {
+        val root = Json.parseToJsonElement(userInfoBody).jsonObject
+        // ユーザークライアントロールのマッパー(multivalued)はトップレベルの roles に配列で出る想定
+        if (elementHasAdminRole(root["roles"])) return true
+        // 形式の揺れ対応: realm_access.roles / resource_access["admin-panel"].roles
+        val realmAccess = root["realm_access"] as? JsonObject
+        if (elementHasAdminRole(realmAccess?.get("roles"))) return true
+        val resourceAccess = root["resource_access"] as? JsonObject
+        // resource_accessはクライアントIDごとの入れ子なので、admin-panelクライアント分のみ見る
+        val adminPanelAccess = resourceAccess?.get("admin-panel")
+        return elementHasAdminRole(adminPanelAccess)
+    } catch (e: Throwable) {
+        // 応答がJSONでない等は管理者扱いにしない(安全側)
         false
     }
+}
+
+/** ロール表現(配列/オブジェクト/文字列)に admin が含まれるか判定する。 */
+private fun elementHasAdminRole(element: JsonElement?): Boolean = when (element) {
+    is JsonArray -> element.any { it is JsonPrimitive && it.content == "admin" }
+    is JsonObject -> element.containsKey("admin") || element.values.any { elementHasAdminRole(it) }
+    is JsonPrimitive -> element.content == "admin"
+    else -> false
 }
 
 @Serializable
@@ -1096,9 +1140,10 @@ private suspend fun getUserId(client: HttpClient, userInfoUrl: String, token: St
 }
 
 /**
- * 組織の操作(メンバー閲覧・追加・削除)を許可するか判定する。manage realmの管理者は常に許可、
- * 同じ組織のメンバー本人である場合のみ許可する。
- * 以前は public(kigawa-net)realm もサポートしていたが、issue #133 で単一レルムに統合した。 */
+ * 組織の操作(メンバー閲覧・追加・削除)を許可するか判定する。adminロールを持つ管理者は
+ * 常に許可、同じ組織のメンバー本人である場合のみ許可する。
+ * issue #155でkigawa-net realmに統合されたため、subの比較はkigawa-netのuserinfoと
+ * 組織メンバーのIDで行われる。 */
 private suspend fun canManageOrganization(client: HttpClient, token: String, orgId: String): Boolean {
     if (isValidAdminToken(client, token)) return true
     val userId = getUserId(client, adminRealmUserInfoUrl, token) ?: return false

@@ -17,14 +17,16 @@ import io.ktor.http.parameters
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-private const val ADMIN_REALM = "manage"
+// issue #155で管理用realm(manage)からkigawa-netへ移行した。
+// ユーザー管理の対象(組織メンバーと同一人物の sub)はkigawa-net realmにいる。
+private const val ADMIN_REALM = "kigawa-net"
 
 internal val keycloakServerUrl = System.getenv("KEYCLOAK_SERVER_URL") ?: "https://user.kigawa.net"
 
 /**
  * ユーザー管理機能はKeycloak Admin REST APIを叩く専用のサービスアカウント(client_credentials
- * グラント)を使う。既存のOIDCログイン用クライアント(admin-panel)とは別に、manage realm側で
- * サービスアカウント有効なconfidential clientを作成し、realm-managementクライアントの
+ * グラント)を使う。kigawa-net realm側でサービスアカウント有効なconfidential client
+ * `admin-panel-org-service`(組織管理でも使う同一クライアント)を使い、realm-managementクライアントの
  * manage-usersロールを付与しておく必要がある(Keycloak側の設定はこのリポジトリの範囲外)。
  * クライアントIDやシークレットが未設定/無効な間は、全操作が failure として返る。
  */

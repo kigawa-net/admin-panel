@@ -16,7 +16,9 @@ import net.kigawa.admin.networkmap.NetworkMapPage
 @Composable
 fun NetworkMapRoute() {
     val ctx = rememberPageContext()
-    AuthGuard(requireAdmin = true) { state, _, provider ->
+    // ネットワークマップはサーバー側でも所属組織で絞り込んで一般ユーザーに開放している
+    // ため、管理者専用にはしない(AppShellのナビ表記と合わせる)。
+    AuthGuard(requireAdmin = false) { state, _, provider ->
         var currentOrgId by remember { mutableStateOf<String?>(localStorage.getItem("selectedOrgId")) }
         val onOrgChange: (String?) -> Unit = { orgId ->
             currentOrgId = orgId
@@ -27,7 +29,7 @@ fun NetworkMapRoute() {
             }
         }
         AppShell(
-            isAdmin = true,
+            isAdmin = state.isAdmin,
             accessToken = state.accessToken,
             currentOrgId = currentOrgId,
             onOrgChange = onOrgChange,

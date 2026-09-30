@@ -8,7 +8,7 @@ Keycloak認証付き管理パネル。[Kobweb](https://kobweb.varabyte.com/)（K
 |---------|------|
 | フロントエンド | Kotlin/JS + Kobweb 0.23.3 + Compose HTML |
 | バックエンド | Kotlin + Ktor server |
-| 認証 | Keycloak (OIDC / Resource Owner Password) |
+| 認証 | Keycloak (OIDC Authorization Code + PKCE、kigawa-net realm) |
 | HTTP クライアント | Ktor 3.0.0 |
 | ビルド | Gradle 8.14.2 + Kotlin 2.2.20 |
 | サーバー | Nginx (Alpine) + Ktor |
@@ -69,10 +69,12 @@ git push → main
 
 ## 認証フロー
 
-1. ユーザーがユーザー名・パスワードを入力
-2. `KeycloakAuth.kt` が Keycloak の Token エンドポイントへ Resource Owner Password フローでリクエスト
-3. アクセストークン取得成功 → `AuthState.Authenticated` に遷移しダッシュボード表示
-4. エラー時は `AuthState.Error` でエラーメッセージ表示
+1. ユーザーが「ログイン」を押し、`KeycloakAuth.kt` が kigawa-net realm(`user.kigawa.net`)の認可エンドポイントへ Authorization Code + PKCE フローでリダイレクト
+2. 認可コードを Token エンドポイントでアクセストークンに交換し、userinfo を取得
+3. userinfo に載るロール(`admin-panel` クライアントの `admin` ロール)の有無で管理者を判定(ロールが無い・取得できない間は非管理者)
+4. 取得成功 → `AuthState.Authenticated` に遷移しダッシュボード表示
+5. エラー時は `AuthState.Error` でエラーメッセージ表示
+6. 画面表示に加え、サーバー側も userinfo のロールで管理者を再判定する(RBAC)
 
 ## 依存関係の注意点
 

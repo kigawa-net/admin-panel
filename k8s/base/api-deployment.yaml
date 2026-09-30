@@ -35,31 +35,25 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            # 管理用realm(全機能)とpublic用realm(閲覧専用)を独立に検証するためのuserinfo
-            # エンドポイント。public用realmはKeycloak側で別途作成が必要(未作成の間、
-            # public用realmのトークンは常に無効と判定されるだけで、管理用realmの動作には
-            # 影響しない)。
+            # 認証・管理者ロール判定に使うuserinfoエンドポイント(issue #155で管理用realm
+            # (manage)からkigawa-netへ移行)。kigawa-net realmは誰でもセルフ登録できる
+            # ため、adminロールの有無で管理者を判定する。
             - name: KEYCLOAK_ADMIN_USERINFO_URL
-              value: "https://user.kigawa.net/realms/manage/protocol/openid-connect/userinfo"
-            - name: KEYCLOAK_PUBLIC_USERINFO_URL
               value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
             # ユーザー管理機能(一覧・作成・削除・有効/無効・パスワードリセット)が使う、
-            # Keycloak Admin REST API専用のサービスアカウント(client_credentials)。manage
-            # realm側にservice account有効なconfidential clientを作成し、realm-management
-            # クライアントのmanage-usersロールを付与した上で、Secret
-            # admin-panel-keycloak-service-account に clientId/clientSecret を投入する
-            # 必要がある(Keycloak側の設定はこのリポジトリの範囲外)。未設定の間はユーザー
-            # 管理系エンドポイントが503を返すのみで、他機能には影響しない。
+            # Keycloak Admin REST API専用のサービスアカウント(client_credentials)。
+            # issue #155で管理用realm(manage)のadmin-panel-serviceから、kigawa-net realmの
+            # admin-panel-org-service(組織管理と同一クライアント。realm-managementの
+            # manage-users等を保有)へ切り替えた。クライアントIDは秘密ではないので平文で持つ。
+            # clientSecretはBitwardenから同期するSecret admin-panel-org-service-keycloak を
+            # 参照する(k8s/base/org-bws.yaml)。未設定の間はユーザー管理系エンドポイントが
+            # 503を返すのみで、他機能には影響しない。
             - name: KEYCLOAK_ADMIN_API_CLIENT_ID
-              valueFrom:
-                secretKeyRef:
-                  name: admin-panel-keycloak-service-account
-                  key: clientId
-                  optional: true
+              value: "admin-panel-org-service"
             - name: KEYCLOAK_ADMIN_API_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: admin-panel-keycloak-service-account
+                  name: admin-panel-org-service-keycloak
                   key: clientSecret
                   optional: true
             # 組織管理機能(組織の一覧・作成・削除・メンバー管理)が使う、Keycloak

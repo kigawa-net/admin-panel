@@ -23,6 +23,10 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.coroutines.await
 import net.kigawa.admin.util.URLSearchParams
 import org.w3c.dom.get
@@ -30,9 +34,12 @@ import org.w3c.dom.set
 import kotlin.js.Promise
 
 /**
- * Keycloakの単一レルム(manage)での認証を扱う。
- * 以前は管理用realm(manage)とpublic用realm(kigawa-net)の2つがあったが、
- * issue #133で単一レルムに統合した。アクセス制御の境界はサーバー側(RBAC)で行う。
+ * Keycloakのkigawa-netレルムでの認証を扱う。
+ * issue #155で管理用realm(manage)からkigawa-netへ移行した。kigawa-net realmは
+ * 誰でもセルフ登録できる(registrationAllowed=true)ため、管理者判定はuserinfoに載る
+ * ロール(admin-panelクライアントの admin ロール)の有無で行い、
+ * ロールが確認できない場合は非管理者(安全側)として扱う。
+ * 実際のアクセス制御の境界はサーバー側(RBAC)でも併せて行う。
  *
  * issue #169でGoogle式アカウント切替えに対応し、複数ユーザーのセッションを
  * 同時保持できる。アカウントIDはuserinfoのsubを用いる。
@@ -52,8 +59,39 @@ data class UserInfoResponse(
     @SerialName("sub") val sub: String,
     @SerialName("preferred_username") val preferredUsername: String? = null,
     @SerialName("email") val email: String? = null,
-    @SerialName("name") val name: String? = null
+    @SerialName("name") val name: String? = null,
+    // ロールはKeycloakのマッパー設定により形式が揺れるため、あえて型を固定しない
+    @SerialName("roles") val roles: JsonElement? = null,
+    @SerialName("realm_access") val realmAccess: JsonElement? = null,
+    @SerialName("resource_access") val resourceAccess: JsonElement? = null
 )
+
+/**
+ * userinfoのロール表現に admin が含まれるか判定する。
+ * KeycloakのUser Client Roleマッパー(multivalued)はトップレベルの roles に
+ * 配列("admin"等)で出る想定だが、realm_access.roles / resource_access["admin-panel"].roles
+ * 形式にも対応するため、配列・オブジェクト・文字列のいずれでも受ける。
+ * ロールが無い・形式が不明な場合は false(非管理者・安全側)にする。
+ */
+private fun JsonElement?.containsAdminRole(): Boolean = when (this) {
+    is JsonArray -> any { it is JsonPrimitive && it.content == "admin" }
+    is JsonObject -> keys.any { it == "admin" } || values.any { it.containsAdminRole() }
+    is JsonPrimitive -> content == "admin"
+    else -> false
+}
+
+/**
+ * userinfo全体から管理者(adminロール保有)を判定する。
+ * kigawa-net realmは誰でもセルフ登録できるため、ロール欠落時を管理者扱いにすると
+ * 全員が管理者になってしまう。必ず「ロールが確認できた場合のみ」true を返す。
+ */
+private fun UserInfoResponse.hasAdminRole(): Boolean {
+    if (roles != null && roles.containsAdminRole()) return true
+    if (realmAccess != null && realmAccess.containsAdminRole()) return true
+    // resource_accessはクライアントIDごとの入れ子なので、admin-panelクライアント分のみ見る
+    val adminPanelAccess = (resourceAccess as? JsonObject)?.get("admin-panel")
+    return adminPanelAccess != null && adminPanelAccess.containsAdminRole()
+}
 
 /** アカウント切替えメニューの表示用。idはuserinfoのsub(レガシー移行直後は仮ID)。 */
 data class AccountInfo(val id: String, val username: String)
@@ -71,13 +109,16 @@ private data class StoredAccount(
     val accessToken: String,
     val refreshToken: String? = null,
     val idToken: String? = null,
-    val expiresAt: Long = 0L
+    val expiresAt: Long = 0L,
+    // 最後に userinfo で確認できた管理者フラグ。取得できない間は false(安全側)。
+    val isAdmin: Boolean = false
 )
 
 object KeycloakConfig {
     val serverUrl: String = js("window.__KEYCLOAK_URL__ || 'https://user.kigawa.net'") as String
     val clientId: String = js("window.__KEYCLOAK_CLIENT_ID__ || 'admin-panel'") as String
-    val realm: String = "manage"
+    // issue #155で管理用realm(manage)からkigawa-netへ移行した
+    val realm: String = "kigawa-net"
 
     fun authUrl() = "$serverUrl/realms/$realm/protocol/openid-connect/auth"
     fun tokenUrl() = "$serverUrl/realms/$realm/protocol/openid-connect/token"
@@ -92,7 +133,9 @@ sealed class AuthState {
         val username: String,
         val accessToken: String,
         val accountId: String,
-        val accounts: List<AccountInfo> = emptyList()
+        val accounts: List<AccountInfo> = emptyList(),
+        // userinfoのロール(admin-panelのadminロール)で判定。確認できない間は false(安全側)
+        val isAdmin: Boolean = false
     ) : AuthState()
 
     data class Error(val message: String) : AuthState()
@@ -189,6 +232,46 @@ class KeycloakAuthProvider : AutoCloseable {
         }
         emitActiveOrUnauthenticated()
         scheduleAutoRefresh()
+        // localStorageにはロール情報が最新で入っていない場合があるため、
+        // 起動時に userinfo から管理者フラグを最新化する(失敗時は現状維持)
+        refreshActiveAdminFlag()
+    }
+
+    /**
+     * 保持しているアクセストークンで userinfo を取得し、管理者フラグを最新化する。
+     * 保存時点のロールが古い(権限が剥奪された等)場合に備えた補完で、
+     * 取得に失敗してもログイン状態は維持し、描画クラッシュもさせない。
+     */
+    private fun refreshActiveAdminFlag() {
+        scope.launch {
+            try {
+                val activeId = try {
+                    localStorage[KEY_ACTIVE_ACCOUNT]
+                } catch (e: Throwable) {
+                    null
+                } ?: return@launch
+                val account = loadAccounts()[activeId] ?: return@launch
+                val userInfo = httpClient.get(KeycloakConfig.userInfoUrl()) {
+                    bearerAuth(account.accessToken)
+                }.body<UserInfoResponse>()
+                val admin = userInfo.hasAdminRole()
+                // 取得中に別の処理が書き換えていたら触らない
+                val latest = loadAccounts()
+                val current = latest[activeId] ?: return@launch
+                if (current.isAdmin == admin && !activeId.startsWith(LEGACY_ID_PREFIX)) return@launch
+                latest[activeId] = current.copy(
+                    isAdmin = admin,
+                    username = if (activeId.startsWith(LEGACY_ID_PREFIX)) displayNameOf(userInfo) else current.username
+                )
+                saveAccounts(latest)
+                emitActiveOrUnauthenticated()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // ktor-client-jsがブラウザのfetch()失敗時にExceptionをすり抜けて
+                // 投げる場合があるためThrowableで受ける。失敗時は現状維持する。
+            }
+        }
     }
 
     /**
@@ -276,7 +359,8 @@ class KeycloakAuthProvider : AutoCloseable {
                 username = active.username,
                 accessToken = active.accessToken,
                 accountId = activeId,
-                accounts = accounts.map { (id, account) -> AccountInfo(id, account.username) }
+                accounts = accounts.map { (id, account) -> AccountInfo(id, account.username) },
+                isAdmin = active.isAdmin
             )
         } else {
             try {
@@ -383,23 +467,28 @@ class KeycloakAuthProvider : AutoCloseable {
                 idToken = tokenResponse.idToken ?: account.idToken,
                 expiresAt = nowMillis() + tokenResponse.expiresIn * 1000L
             )
-            // レガシー仮ID(legacy-*)の正規化: リフレッシュ成功時にuserinfoから
-            // 正規subを取得できれば、仮IDを置き換える
+            // リフレッシュ成功時に userinfo から管理者フラグを最新化する。
+            // ロールが載らない・取得失敗の場合は保存済みの値を維持する(安全側は
+            // 「非管理者」だが、表示用フラグはサーバー側のRBACでも再判定される)。
+            // 併せてレガシー仮ID(legacy-*)の正規化も行う。
             var nextActiveId = activeId
-            if (activeId.startsWith(LEGACY_ID_PREFIX)) {
-                try {
-                    val userInfo = httpClient.get(KeycloakConfig.userInfoUrl()) {
-                        bearerAuth(tokenResponse.accessToken)
-                    }.body<UserInfoResponse>()
+            try {
+                val userInfo = httpClient.get(KeycloakConfig.userInfoUrl()) {
+                    bearerAuth(tokenResponse.accessToken)
+                }.body<UserInfoResponse>()
+                updated = updated.copy(
+                    isAdmin = userInfo.hasAdminRole(),
+                    username = displayNameOf(userInfo)
+                )
+                if (activeId.startsWith(LEGACY_ID_PREFIX)) {
                     nextActiveId = userInfo.sub
-                    updated = updated.copy(username = displayNameOf(userInfo))
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Throwable) {
-                    // ktor-client-jsがブラウザのfetch()失敗時にExceptionをすり抜けて
-                    // 投げる場合があるためThrowableで受ける(既存の描画クラッシュ対策と同様)。
-                    // userinfo取得に失敗しても、トークン更新自体は有効なので継続する。
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // ktor-client-jsがブラウザのfetch()失敗時にExceptionをすり抜けて
+                // 投げる場合があるためThrowableで受ける(既存の描画クラッシュ対策と同様)。
+                // userinfo取得に失敗しても、トークン更新自体は有効なので継続する。
             }
 
             val next = loadAccounts()
@@ -503,7 +592,10 @@ class KeycloakAuthProvider : AutoCloseable {
                 accessToken = tokenResponse.accessToken,
                 refreshToken = tokenResponse.refreshToken ?: accounts[accountId]?.refreshToken,
                 idToken = tokenResponse.idToken,
-                expiresAt = nowMillis() + tokenResponse.expiresIn * 1000L
+                expiresAt = nowMillis() + tokenResponse.expiresIn * 1000L,
+                // kigawa-net realmは誰でもセルフ登録できるため、ロールが確認できた
+                // 場合のみ管理者とする(無い間は非管理者・安全側)
+                isAdmin = userInfo.hasAdminRole()
             )
             // 同一ユーザーのレガシー仮IDが残っていれば掃除する(別ユーザーの仮IDは残す)
             val legacyId = "$LEGACY_ID_PREFIX$displayName"

@@ -27,7 +27,7 @@ fun GithubAppRoute() {
             }
         }
         AppShell(
-            isAdmin = true,
+            isAdmin = state.isAdmin,
             accessToken = state.accessToken,
             currentOrgId = currentOrgId,
             onOrgChange = onOrgChange,
