@@ -9,10 +9,8 @@ spec:
     secretName: bitwarden-sec
     secretKey: token
   map:
-    # TODO(admin-panel#64): kigawa-net/infra#137がmerge・terraform apply済みになったら、
-    # `terraform output`のmariadb_root_password_bws_id/mariadb_app_password_bws_idの
-    # 実際の値に差し替える。
-    - bwSecretId: "REPLACE_ME_mariadb_root_password_bws_id"
+    # terraform output(platform/admin-panel)の実値(kigawa-net/infra#137)。
+    - bwSecretId: "74a6fe9c-c0f0-4399-a251-b4cd011a0037"
       secretKeyName: root-password
-    - bwSecretId: "REPLACE_ME_mariadb_app_password_bws_id"
+    - bwSecretId: "e6242528-1c26-40bd-a816-b4cd011a0035"
       secretKeyName: app-password
