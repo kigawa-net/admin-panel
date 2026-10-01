@@ -47,6 +47,7 @@ fun App(authProvider: KeycloakAuthProvider) {
                 AppScreen.Dashboard -> DashboardScreen(
                     username = state.username,
                     isAdmin = isAdmin,
+                    accessToken = state.accessToken,
                     onLogout = { authProvider.logout() },
                     onOpenNetworkMap = { currentScreen = AppScreen.NetworkMap },
                     onOpenTraffic = { currentScreen = AppScreen.Traffic },

@@ -160,6 +160,16 @@ spec:
                   name: admin-panel-mariadb
                   key: app-password
                   optional: true
+            # k8s-system#220: AlertmanagerのWatchdog webhook認証用の共有シークレット。
+            # kigawa01/k8s-systemのprometheus/watchdog-webhook-bws.yamlと同じBitwarden
+            # secretを参照する(watchdog-bws.yaml)。未設定の間はWatchdog関連エンドポイント
+            # が無効化され、ダッシュボードのカードも表示されないだけで他機能には影響しない。
+            - name: WATCHDOG_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: admin-panel-watchdog
+                  key: webhook-secret
+                  optional: true
           resources:
             requests:
               cpu: 50m
