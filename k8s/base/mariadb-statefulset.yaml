@@ -45,6 +45,17 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          # 初回起動時の mariadb-install-db(DBディレクトリ初期化)はこのノード上で
+          # 2分以上かかり、livenessProbe(initialDelay 30s + 3回失敗でkill)が初期化の
+          # 最中にプロセスを殺して ibdata1 が破損する(以降は必ずクラッシュする)という
+          # 問題が起きていた。startupProbeを先に置くことで、liveness/readinessは
+          # 初期化が終わるまで評価されない。
+          startupProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             exec:
               command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
