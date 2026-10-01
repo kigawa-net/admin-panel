@@ -1,0 +1,16 @@
+apiVersion: k8s.bitwarden.com/v1
+kind: BitwardenSecret
+metadata:
+  name: admin-panel-watchdog-bws
+spec:
+  organizationId: "a2b57f3d-6e2b-4467-b499-b31e00bfd804"
+  secretName: admin-panel-watchdog
+  authToken:
+    secretName: bitwarden-sec
+    secretKey: token
+  map:
+    # k8s-system#220: AlertmanagerのWatchdog webhookと共有するシークレット。
+    # Alertmanager側はkigawa01/k8s-systemのprometheus/watchdog-webhook-bws.yaml
+    # (alertmanager-watchdog-webhook)で同じBitwarden secretを参照する。
+    - bwSecretId: "c9fd404d-164f-426b-9365-b4d600b39616"
+      secretKeyName: webhook-secret

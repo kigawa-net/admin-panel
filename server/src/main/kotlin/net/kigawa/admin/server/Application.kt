@@ -220,6 +220,27 @@ fun Application.module() {
             call.respond(queryTraffic(httpClient, rangeMinutes))
         }
 
+        // k8s-system#220: AlertmanagerからのWatchdog(dead man's switch) webhook。
+        // Keycloakトークンを持たないAlertmanagerが呼び出すため、共有シークレットで認証する。
+        post("/api/watchdog/webhook") {
+            val secret = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (!isValidWatchdogSecret(secret)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid secret"))
+                return@post
+            }
+            recordWatchdogPing()
+            call.respond(HttpStatusCode.OK)
+        }
+
+        get("/api/watchdog/status") {
+            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
+                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+                return@get
+            }
+            call.respond(fetchWatchdogStatus())
+        }
+
         get("/api/network-topology") {
             val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
             if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {

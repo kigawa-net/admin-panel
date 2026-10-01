@@ -10,12 +10,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import net.kigawa.admin.watchdog.WatchdogStatusCard
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     username: String,
     isAdmin: Boolean,
+    accessToken: String,
     onLogout: () -> Unit,
     onOpenNetworkMap: () -> Unit,
     onOpenTraffic: () -> Unit,
@@ -65,6 +67,10 @@ fun DashboardScreen(
                 text = "Welcome back, $username!",
                 style = MaterialTheme.typography.bodyLarge
             )
+
+            if (isAdmin) {
+                WatchdogStatusCard(accessToken = accessToken)
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
 

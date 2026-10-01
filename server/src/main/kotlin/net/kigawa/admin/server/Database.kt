@@ -50,6 +50,16 @@ internal fun initDatabaseSchema() {
                 )
                 """.trimIndent()
             )
+            // k8s-system#220: AlertmanagerのWatchdog(dead man's switch)pingの最終受信時刻。
+            // 単一行(id=1)のみを使い回す。
+            stmt.execute(
+                """
+                CREATE TABLE IF NOT EXISTS watchdog_ping (
+                    id INT PRIMARY KEY,
+                    last_ping_at TIMESTAMP NOT NULL
+                )
+                """.trimIndent()
+            )
         }
     }
 }

@@ -16,3 +16,4 @@ resources:
   - mariadb-statefulset.yaml
   - mariadb-service.yaml
   - org-bws.yaml
+  - watchdog-bws.yaml
