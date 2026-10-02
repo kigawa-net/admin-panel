@@ -5,9 +5,6 @@ import io.ktor.client.call.body
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.client.request.get
-import io.ktor.client.request.header
-import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -17,6 +14,8 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.call
 import io.ktor.server.application.install
+import io.ktor.server.auth.Authentication
+import io.ktor.server.auth.authenticate
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
@@ -43,26 +42,15 @@ import io.ktor.server.routing.put
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 /** Internal cluster DNS for the kube-prometheus-stack Prometheus service (see kigawa01/k8s-system). */
 internal val prometheusUrl =
     System.getenv("PROMETHEUS_URL") ?: "http://prometheus-operated.prometheus.svc.cluster.local:9090"
 
-/**
- * kigawa-net realm(issue #155で管理用realm manageから移行)のトークンを検証するuserinfo。
- * ロールの載り方がKeycloakのマッパー設定で揺れるため、複数形式に対応した
- * adminロール判定を併用する。
- */
-private val adminRealmUserInfoUrl = System.getenv("KEYCLOAK_ADMIN_USERINFO_URL")
-    ?: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
 
 /**
  * Expected `aud` claim on GitHub Actions OIDC tokens presented to the CI-facing GitHub App
@@ -173,6 +161,19 @@ fun Application.module() {
     monitor.subscribe(ApplicationStopping) { backgroundScope.cancel() }
     val logger = environment.log
 
+    // issue #183: Keycloak client role(admin-panel)によるRBAC認証(Ktor Authentication/JWT)。
+    // 検証対象は signature/JWKS・iss・exp・aud(admin-panel)・必要時 azp。
+    // 認可は各routeの requireRole(...) で行う(未認証401 / 権限不足403)。
+    val rbacConfig = RbacConfig.fromEnv()
+    val jwksProvider = RefreshingJwkProvider(rbacConfig.jwksUrl)
+    install(Authentication) {
+        keycloakJwt(rbacConfig, jwksProvider)
+    }
+
+    // issue #183: 起動時にロール判定が可能か(JWKS到達・aud要件)をログに残す。
+    // 失敗しても起動は継続し、検証はリクエスト毎に再試行される。
+    logRbacStartupStatus(rbacConfig, jwksProvider, logger, backgroundScope)
+
     // admin-panel#64: CI向けトークン発行の許可設定(ci_token_policy)用DB。MariaDBが未設定の
     // 環境(ローカル開発等)では機能ごと無効化し、他の機能には影響させない。
     if (isDatabaseConfigured) {
@@ -207,778 +208,6 @@ fun Application.module() {
                     // クライアント切断時に書き込みが失敗するのは正常なので握りつぶす
                 }
             }
-        }
-
-        get("/api/traffic") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-
-            val rangeMinutes = call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(5, 1440) ?: 60
-            call.respond(queryTraffic(httpClient, rangeMinutes))
-        }
-
-        // k8s-system#220: AlertmanagerからのWatchdog(dead man's switch) webhook。
-        // Keycloakトークンを持たないAlertmanagerが呼び出すため、共有シークレットで認証する。
-        post("/api/watchdog/webhook") {
-            val secret = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (!isValidWatchdogSecret(secret)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid secret"))
-                return@post
-            }
-            recordWatchdogPing()
-            call.respond(HttpStatusCode.OK)
-        }
-
-        get("/api/watchdog/status") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            call.respond(fetchWatchdogStatus())
-        }
-
-        get("/api/network-topology") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-
-            // ユーザーがアクセス可能な組織IDを取得(管理者は全アクセス可)
-            val isAdmin = isValidAdminToken(httpClient, token)
-            val allowedOrgIds = if (isAdmin) {
-                null // null = 全組織許可
-            } else {
-                val userId = getUserId(httpClient, adminRealmUserInfoUrl, token)
-                if (userId != null) listMyOrganizations(httpClient, userId)!!.organizations.map { it.id }.toSet() else emptySet()
-            }
-
-            call.respond(loadNetworkTopology(httpClient, allowedOrgIds))
-        }
-
-        get("/api/servers") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-
-            val statuses = fetchServerStatuses()
-            if (statuses == null) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "server status unavailable"))
-            } else {
-                call.respond(statuses)
-            }
-        }
-
-        get("/api/servers/{name}/pods") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-
-            val nodeName = call.parameters["name"]
-            if (nodeName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
-                return@get
-            }
-
-            val pods = listPodsOnNode(nodeName)
-            if (pods == null) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "pod list unavailable"))
-            } else {
-                call.respond(pods)
-            }
-        }
-
-        // 以下は書き込み系のクラスタ操作(Cordon/Uncordon/Drain/Pod削除)。クライアント側で
-        // 確認ダイアログを経由してから呼ばれる想定。
-        post("/api/servers/{name}/cordon") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val nodeName = call.parameters["name"]
-            if (nodeName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
-                return@post
-            }
-            call.respond(setNodeSchedulable(nodeName, schedulable = false))
-        }
-
-        post("/api/servers/{name}/uncordon") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val nodeName = call.parameters["name"]
-            if (nodeName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
-                return@post
-            }
-            call.respond(setNodeSchedulable(nodeName, schedulable = true))
-        }
-
-        post("/api/servers/{name}/drain") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val nodeName = call.parameters["name"]
-            if (nodeName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
-                return@post
-            }
-            call.respond(drainNode(nodeName))
-        }
-
-        // ノード自体の電源操作(SSH経由)。Cordon/Drainを行った上で、実際にシャットダウン/
-        // 再起動する。drainTimeoutSecondsの間だけPodの退避完了を待ち、タイムアウトしても
-        // 処理は続行する(無限に待たない)。
-        post("/api/servers/{name}/graceful-shutdown") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val nodeName = call.parameters["name"]
-            if (nodeName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
-                return@post
-            }
-            val request = try {
-                call.receive<GracefulShutdownRequestDto>()
-            } catch (e: Exception) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
-                return@post
-            }
-            val timeout = request.drainTimeoutSeconds.coerceIn(0, 1800)
-            backgroundScope.launch {
-                val result = gracefulNodeShutdown(nodeName, timeout, reboot = false)
-                if (!result.success) logger.warn("graceful-shutdown of $nodeName failed: ${result.message}")
-            }
-            call.respond(ActionResultDto(true, "シャットダウン処理を開始しました。進行状況は一覧の自動更新で確認できます。"))
-        }
-
-        post("/api/servers/{name}/graceful-reboot") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val nodeName = call.parameters["name"]
-            if (nodeName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
-                return@post
-            }
-            val request = try {
-                call.receive<GracefulShutdownRequestDto>()
-            } catch (e: Exception) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
-                return@post
-            }
-            val timeout = request.drainTimeoutSeconds.coerceIn(0, 1800)
-            backgroundScope.launch {
-                val result = gracefulNodeShutdown(nodeName, timeout, reboot = true)
-                if (!result.success) logger.warn("graceful-reboot of $nodeName failed: ${result.message}")
-            }
-            call.respond(ActionResultDto(true, "再起動処理を開始しました。進行状況は一覧の自動更新で確認できます。"))
-        }
-
-        delete("/api/pods/{namespace}/{name}") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@delete
-            }
-            val namespace = call.parameters["namespace"]
-            val name = call.parameters["name"]
-            if (namespace.isNullOrBlank() || name.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing namespace or name"))
-                return@delete
-            }
-            call.respond(deletePod(namespace, name))
-        }
-
-        // ユーザー管理(kigawa-net realm・adminロールの管理者のみ)。Keycloak Admin REST APIを
-        // 専用サービスアカウント(client_credentials)経由で呼ぶ。
-        // サービスアカウント未設定の場合は503を返す。
-        get("/api/users") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val users = listKeycloakUsers(httpClient)
-            if (users == null) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "user list unavailable"))
-            } else {
-                call.respond(users)
-            }
-        }
-
-        post("/api/users") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val request = try {
-                call.receive<CreateUserRequest>()
-            } catch (e: Exception) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
-                return@post
-            }
-            call.respond(createKeycloakUser(httpClient, request))
-        }
-
-        delete("/api/users/{id}") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@delete
-            }
-            val userId = call.parameters["id"]
-            if (userId.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
-                return@delete
-            }
-            call.respond(deleteKeycloakUser(httpClient, userId))
-        }
-
-        post("/api/users/{id}/enable") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val userId = call.parameters["id"]
-            if (userId.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
-                return@post
-            }
-            call.respond(setKeycloakUserEnabled(httpClient, userId, enabled = true))
-        }
-
-        post("/api/users/{id}/disable") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val userId = call.parameters["id"]
-            if (userId.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
-                return@post
-            }
-            call.respond(setKeycloakUserEnabled(httpClient, userId, enabled = false))
-        }
-
-        post("/api/users/{id}/reset-password") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val userId = call.parameters["id"]
-            if (userId.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
-                return@post
-            }
-            val request = try {
-                call.receive<ResetPasswordRequest>()
-            } catch (e: Exception) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
-                return@post
-            }
-            call.respond(resetKeycloakUserPassword(httpClient, userId, request.newPassword, request.temporary))
-        }
-
-        // 組織管理(対象データはkigawa-net realm)。全組織の一覧・削除はadminロールの
-        // 管理者限定、作成・自分が所属する組織の閲覧・メンバー管理はkigawa-net realmの
-        // 一般ユーザーも行える。Keycloak Organizations REST APIを専用サービスアカウント
-        // (client_credentials)経由で呼ぶ。
-        get("/api/organizations") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val organizations = listOrganizations(httpClient)
-            if (organizations == null) {
-                call.respond(
-                    HttpStatusCode.ServiceUnavailable,
-                    mapOf("error" to (organizationApiUnavailableReason() ?: "組織一覧を取得できませんでした"))
-                )
-            } else {
-                call.respond(organizations)
-            }
-        }
-
-        // 組織の作成はkigawa-net realmにログインしているユーザーなら誰でも行える。
-        // 一般ユーザーが作成した場合は、作成者自身を自動的にその組織のメンバーとして登録する
-        // (でなければ作成した本人がその組織を一覧にも出せず操作もできなくなってしまう)。
-        post("/api/organizations") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val request = try {
-                call.receive<CreateOrganizationRequest>()
-            } catch (e: Exception) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
-                return@post
-            }
-            val result = createOrganization(httpClient, request)
-            if (result.success && !isValidAdminToken(httpClient, token)) {
-                val userId = getUserId(httpClient, adminRealmUserInfoUrl, token)
-                val orgId = userId?.let { findOrganizationIdByName(httpClient, request.name) }
-                if (userId != null && orgId != null) {
-                    addOrganizationMember(httpClient, orgId, userId)
-                }
-            }
-            call.respond(result)
-        }
-
-        delete("/api/organizations/{id}") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@delete
-            }
-            val orgId = call.parameters["id"]
-            if (orgId.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
-                return@delete
-            }
-            call.respond(deleteOrganization(httpClient, orgId))
-        }
-
-        get("/api/organizations/{id}/members") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            val orgId = call.parameters["id"]
-            if (orgId.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
-                return@get
-            }
-            if (token.isNullOrBlank() || !canManageOrganization(httpClient, token, orgId)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val members = listOrganizationMembers(httpClient, orgId)
-            if (members == null) {
-                call.respond(
-                    HttpStatusCode.ServiceUnavailable,
-                    mapOf("error" to (organizationApiUnavailableReason() ?: "メンバー一覧を取得できませんでした"))
-                )
-            } else {
-                call.respond(members)
-            }
-        }
-
-        post("/api/organizations/{id}/members") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            val orgId = call.parameters["id"]
-            if (orgId.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
-                return@post
-            }
-            if (token.isNullOrBlank() || !canManageOrganization(httpClient, token, orgId)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            val request = try {
-                call.receive<AddOrganizationMemberRequest>()
-            } catch (e: Exception) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
-                return@post
-            }
-            call.respond(addOrganizationMember(httpClient, orgId, request.userId))
-        }
-
-        delete("/api/organizations/{id}/members/{userId}") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            val orgId = call.parameters["id"]
-            val userId = call.parameters["userId"]
-            if (orgId.isNullOrBlank() || userId.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id or user id"))
-                return@delete
-            }
-            if (token.isNullOrBlank() || !canManageOrganization(httpClient, token, orgId)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@delete
-            }
-            call.respond(removeOrganizationMember(httpClient, orgId, userId))
-        }
-
-        // 組織一覧のうち、呼び出したユーザー自身がメンバーになっているものだけを返す
-        // (一般ユーザー向け。全組織を見せるadmin専用の GET /api/organizations とは別)。
-        get("/api/organizations/mine") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val userId = getUserId(httpClient, adminRealmUserInfoUrl, token)
-            if (userId == null) {
-                call.respond(HttpStatusCode.Forbidden, mapOf("error" to "not an authenticated user"))
-                return@get
-            }
-            val organizations = listMyOrganizations(httpClient, userId)
-            if (organizations == null) {
-                call.respond(
-                    HttpStatusCode.ServiceUnavailable,
-                    mapOf("error" to (organizationApiUnavailableReason() ?: "組織一覧を取得できませんでした"))
-                )
-            } else {
-                call.respond(organizations)
-            }
-        }
-
-        get("/api/organizations/users") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAnyToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val query = call.request.queryParameters["query"]
-            if (query.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing query"))
-                return@get
-            }
-            val users = searchKigawaNetUsers(httpClient, query)
-            if (users == null) {
-                call.respond(
-                    HttpStatusCode.ServiceUnavailable,
-                    mapOf("error" to (organizationApiUnavailableReason() ?: "ユーザー検索に失敗しました"))
-                )
-            } else {
-                call.respond(users)
-            }
-        }
-
-        // 物理ホスト(Proxmox)一覧+ハードウェア情報。管理者限定。VM/ディスク/PCI等の詳細は
-        // 呼び出し回数が多く遅くなりがちなため/api/infrastructure/detailsに分離しており、
-        // クライアントはこちらを先に表示してから詳細を非同期に読み込む。
-        get("/api/infrastructure") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            call.respond(fetchInfrastructureHosts())
-        }
-
-        // 物理ホストごとのVM一覧・ディスク・PCIデバイス詳細、およびVMとして見つからなかった
-        // K8sノード(物理専用ノード)一覧。管理者限定。
-        // composeAppとresource-usage-grouped集約が利用する一括取得用。siteのインフラ構成
-        // ページは下のホスト×カテゴリ単位の細粒度エンドポイントを使い、届いた部分から順次描画する。
-        get("/api/infrastructure/details") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            call.respond(fetchInfrastructureDetails())
-        }
-
-        // ホスト×カテゴリ単位の細粒度取得(issue #158)。フロントはこれらを並列に叩き、
-        // 届いた部分から順次描画するため、低速なカテゴリが他を道連れにしない。
-        // 失敗時は空コンテンツで200を返す(既存のグレースフルデグラデーション方針)。
-        get("/api/infrastructure/hosts/{host}/vms") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val hostName = call.parameters["host"]
-            if (hostName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
-                return@get
-            }
-            call.respond(fetchSingleHostVms(hostName))
-        }
-
-        get("/api/infrastructure/hosts/{host}/disks") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val hostName = call.parameters["host"]
-            if (hostName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
-                return@get
-            }
-            call.respond(fetchSingleHostDisks(hostName))
-        }
-
-        get("/api/infrastructure/hosts/{host}/pci") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val hostName = call.parameters["host"]
-            if (hostName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
-                return@get
-            }
-            call.respond(fetchSingleHostPciDevices(hostName))
-        }
-
-        get("/api/infrastructure/hosts/{host}/hw-status") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val hostName = call.parameters["host"]
-            if (hostName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
-                return@get
-            }
-            call.respond(fetchSingleHostHwStatus(hostName))
-        }
-
-        // Proxmox物理ホストのデバイス空きスロット調査(admin-panel#156)。SSHでホストに
-        // 直接入りdmidecode/lsblkで取得する。認証情報(Bitwarden同期の
-        // admin-panel-proxmox-ssh)未設定の間は503を返すのみで、他機能には影響しない。
-        get("/api/infrastructure/hosts/{host}/slots") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            if (!isProxmoxSshConfigured) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Proxmox SSH not configured"))
-                return@get
-            }
-            val hostName = call.parameters["host"]
-            if (hostName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
-                return@get
-            }
-            call.respond(fetchHostSlotInventory(hostName))
-        }
-
-        // k8sノードのデバイス空きスロット調査(Proxmoxホスト向けのフォローアップ)。
-        // ノードIPはKubernetes APIのInternalIPで解決し、認証情報はNODE_SSH_*を使う。
-        // KVMゲスト等の仮想ノードは物理スロットの概念がないためvirtualized=trueで返し、
-        // フロント側で表示を抑止する。ionosゲートウェイ(クラウドVPS)は対象外。
-        // 未設定の間は503を返すのみで、他機能には影響しない。
-        get("/api/infrastructure/nodes/{node}/slots") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            if (!isNodeSshConfigured) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Node SSH not configured"))
-                return@get
-            }
-            val nodeName = call.parameters["node"]
-            if (nodeName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
-                return@get
-            }
-            call.respond(fetchNodeSlotInventory(nodeName))
-        }
-
-        // マウントポイント別ディスク使用率(admin-panel#148)。Prometheusにnode-exporterが
-        // なく`node_filesystem_*`が存在しないため時系列グラフにはせず、SSHでdfを実行した
-        // 現在値を返す。空きスロット取得とは独立にしているため、フロントは両者を並列に
-        // 叩ける(#158の「低速なカテゴリが他を道連れにしない」方針と同じ)。
-        // 認証情報(Proxmox SSH)未設定の間は503を返すのみで、他機能には影響しない。
-        get("/api/infrastructure/hosts/{host}/disk-usage") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            if (!isProxmoxSshConfigured) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Proxmox SSH not configured"))
-                return@get
-            }
-            val hostName = call.parameters["host"]
-            if (hostName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
-                return@get
-            }
-            call.respond(fetchHostDiskUsage(hostName))
-        }
-
-        // K8sノードのマウントポイント別ディスク使用率(admin-panel#148)。ノードIPは
-        // Kubernetes APIのInternalIPで解決し、認証情報はNODE_SSH_*を使う。
-        // 未設定の間は503を返すのみで、他機能には影響しない。
-        get("/api/infrastructure/nodes/{node}/disk-usage") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            if (!isNodeSshConfigured) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Node SSH not configured"))
-                return@get
-            }
-            val nodeName = call.parameters["node"]
-            if (nodeName.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
-                return@get
-            }
-            call.respond(fetchNodeDiskUsage(nodeName))
-        }
-
-        // インフラのリソース利用量の時系列(物理ホスト=Proxmox rrddata / K8sノード=Prometheus
-        // cAdvisor)。グラフ表示用(issue #132)。rangeMinutes は15〜1440(既定60)で、グラフの
-        // 描画点を抑えるためトラフィック時系列と同じく最大120点程度に丸める。
-        get("/api/infrastructure/resource-usage") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val rangeMinutes =
-                call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(15, 1440) ?: 60
-
-            val (physicalHosts, k8sNodes) = coroutineScope<Pair<Map<String, PhysicalHostUsageDto>, Map<String, K8sNodeUsageDto>>> {
-                val physicalDeferred = async { fetchPhysicalHostUsage(rangeMinutes) }
-                val k8sDeferred = async { fetchNodeResourceUsageSeries(rangeMinutes) }
-                physicalDeferred.await() to k8sDeferred.await()
-            }
-
-            call.respond(
-                InfrastructureResourceUsageResponse(
-                    rangeMinutes = rangeMinutes,
-                    physicalHosts = physicalHosts,
-                    k8sNodes = k8sNodes
-                )
-            )
-        }
-
-        // インフラのリソース使用量をグルーピングして集約した時系列(issue #147)。
-        // role / pciType / physicalHost の3軸で集約し、フロント側でタブ切り替えできるようにする。
-        get("/api/infrastructure/resource-usage-grouped") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            val rangeMinutes =
-                call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(15, 1440) ?: 60
-
-            // ノード単位の生データを取得してから、各軸で集約する
-            val nodeSeriesRaw = fetchNodeResourceUsageSeries(rangeMinutes)
-            val infraDetails = fetchInfrastructureDetails()  // Proxmoxホスト-VMマッピング用
-
-            // K8sNodeUsageDto を NodeResourceUsageSeries に変換
-            val nodeSeries = nodeSeriesRaw.mapValues { (_, dto) ->
-                NodeResourceUsageSeries(
-                    cpuCores = dto.cpuCores.map { it.timestampSeconds to it.value },
-                    memGiB = dto.memGiB.map { it.timestampSeconds to it.value }
-                )
-            }
-            // グループ容量合計用にノード単位の容量を保持(容量不明ノードは除外)
-            val nodeCapacity = nodeSeriesRaw.mapNotNull { (name, dto) ->
-                val cpu = dto.cpuCapacityCores?.toDouble()
-                val mem = dto.memCapacityGiB
-                if (cpu == null && mem == null) null else name to ((cpu ?: 0.0) to (mem ?: 0.0))
-            }.toMap()
-
-            // ノード名 → PCIタイプ / 物理ホスト のマッピングを作成
-            val nodeToPciType = mutableMapOf<String, String>()
-            val nodeToPhysicalHost = mutableMapOf<String, String>()
-            val nodeToRole = mutableMapOf<String, String>()
-
-            // fetchServerStatuses() で role を取得
-            fetchServerStatuses()?.servers?.forEach { server ->
-                nodeToRole[server.name] = server.role
-            }
-
-            // infraDetails.hostDetails から VM→物理ホスト、PCIタイプを解決
-            infraDetails.hostDetails.forEach { (hostName, details) ->
-                details.vms.forEach { vm ->
-                    nodeToPhysicalHost[vm.name] = hostName
-                    // PCIタイプは最初のデバイスから代表的なものを決定
-                    val pciType = details.pciDevices.firstOrNull()?.let { classifyPciType(it) } ?: "Other"
-                    nodeToPciType[vm.name] = pciType
-                }
-                // standaloneNodes も対象
-                details.vms.forEach { vm ->
-                    if (!nodeToPhysicalHost.containsKey(vm.name)) {
-                        nodeToPhysicalHost[vm.name] = hostName
-                    }
-                }
-            }
-            infraDetails.standaloneNodes.forEach { node ->
-                nodeToPhysicalHost[node.name] = "standalone"
-                nodeToPciType[node.name] = "Other"
-            }
-
-            // 各軸で集約
-            val byRole = aggregateByKey(nodeSeries, nodeToRole, nodeCapacity)
-            val byPciType = aggregateByKey(nodeSeries, nodeToPciType, nodeCapacity)
-            val byPhysicalHost = aggregateByKey(nodeSeries, nodeToPhysicalHost, nodeCapacity)
-
-            call.respond(
-                GroupedResourceUsageResponse(
-                    rangeMinutes = rangeMinutes,
-                    byRole = byRole,
-                    byPciType = byPciType,
-                    byPhysicalHost = byPhysicalHost
-                )
-            )
-        }
-
-        // GitHub App (kigawa-net, app_id 4316503) operation: mint scoped installation tokens
-        // in place of the long-lived org PAT. Admin-only, since a minted token can act with up
-        // to the App's full contents:write permission.
-        get("/api/github-app/installations") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            if (!GithubApp.isConfigured) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
-                return@get
-            }
-            call.respond(GithubApp.listInstallations(httpClient))
-        }
-
-        post("/api/github-app/installations/{id}/token") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@post
-            }
-            if (!GithubApp.isConfigured) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
-                return@post
-            }
-            val installationId = call.parameters["id"]?.toLongOrNull()
-            if (installationId == null) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid installation id"))
-                return@post
-            }
-            val request = call.receive<GithubInstallationTokenRequest>()
-            call.respond(
-                GithubApp.createInstallationToken(
-                    httpClient,
-                    installationId,
-                    repositories = request.repositories,
-                    permissions = request.permissions
-                )
-            )
         }
 
         // CI-facing broker: custom action -> admin-panel -> GitHub App. Authenticated with the
@@ -1025,151 +254,804 @@ fun Application.module() {
             )
         }
 
-        // admin-panel#64: 上のci-tokenブローカーが参照する呼び出し元リポジトリ別許可設定
-        // (ci_token_policy)を管理画面から追加・編集・削除できるようにするCRUD。管理者限定。
-        get("/api/github-app/ci-policy") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@get
-            }
-            if (!isDatabaseConfigured) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
-                return@get
-            }
-            call.respond(listCiTokenPolicies())
-        }
+        // 認証が必要なAPI(issue #183): Keycloakのclient role(viewer/operator/admin)で認可する。
+        // 認証方式が別の /health・/api/kobweb-status・/api/github-app/ci-token は外側に置く。
+        authenticate("keycloak") {
+            get("/api/traffic") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
 
-        put("/api/github-app/ci-policy/{callerRepository}") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@put
+                val rangeMinutes = call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(5, 1440) ?: 60
+                call.respond(queryTraffic(httpClient, rangeMinutes))
             }
-            if (!isDatabaseConfigured) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
-                return@put
-            }
-            val callerRepository = call.parameters["callerRepository"]
-            if (callerRepository.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing callerRepository"))
-                return@put
-            }
-            val request = call.receive<CiTokenPolicyEntryDto>()
-            if (request.callerRepository != callerRepository) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "callerRepository mismatch"))
-                return@put
-            }
-            upsertCiTokenPolicy(request)
-            call.respond(request)
-        }
 
-        delete("/api/github-app/ci-policy/{callerRepository}") {
-            val token = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
-            if (token.isNullOrBlank() || !isValidAdminToken(httpClient, token)) {
-                call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
-                return@delete
+            get("/api/network-topology") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+
+                // ユーザーがアクセス可能な組織IDを取得(RBACのadminロール保持者は全アクセス可)。
+                // 組織スコープの絞り込みはRBACとは別の概念(issue #183)として維持する。
+                val allowedOrgIds = if (principal.roles.contains(AdminRole.ADMIN)) {
+                    null // null = 全組織許可
+                } else {
+                    listMyOrganizations(httpClient, principal.userId)
+                        ?.organizations?.map { it.id }?.toSet() ?: emptySet()
+                }
+
+                call.respond(loadNetworkTopology(httpClient, allowedOrgIds))
             }
-            if (!isDatabaseConfigured) {
-                call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
-                return@delete
+
+            get("/api/servers") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+
+                val statuses = fetchServerStatuses()
+                if (statuses == null) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "server status unavailable"))
+                } else {
+                    call.respond(statuses)
+                }
             }
-            val callerRepository = call.parameters["callerRepository"]
-            if (callerRepository.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing callerRepository"))
-                return@delete
+
+            get("/api/servers/{name}/pods") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+
+                val nodeName = call.parameters["name"]
+                if (nodeName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                    return@get
+                }
+
+                val pods = listPodsOnNode(nodeName)
+                if (pods == null) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "pod list unavailable"))
+                } else {
+                    call.respond(pods)
+                }
             }
-            val deleted = deleteCiTokenPolicy(callerRepository)
-            if (deleted) {
-                call.respond(HttpStatusCode.OK, mapOf("deleted" to "true"))
-            } else {
-                call.respond(HttpStatusCode.NotFound, mapOf("error" to "not found"))
+
+            // 以下は書き込み系のクラスタ操作(Cordon/Uncordon/Drain/Pod削除)。クライアント側で
+            // 確認ダイアログを経由してから呼ばれる想定。
+            post("/api/servers/{name}/cordon") {
+                val principal = requireRole(AdminRole.OPERATOR) ?: return@post
+                val nodeName = call.parameters["name"]
+                if (nodeName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                    return@post
+                }
+                auditLog(principal, operation = "server.cordon", target = nodeName, result = "accepted")
+                call.respond(setNodeSchedulable(nodeName, schedulable = false))
+            }
+
+            post("/api/servers/{name}/uncordon") {
+                val principal = requireRole(AdminRole.OPERATOR) ?: return@post
+                val nodeName = call.parameters["name"]
+                if (nodeName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                    return@post
+                }
+                auditLog(principal, operation = "server.uncordon", target = nodeName, result = "accepted")
+                call.respond(setNodeSchedulable(nodeName, schedulable = true))
+            }
+
+            post("/api/servers/{name}/drain") {
+                val principal = requireRole(AdminRole.OPERATOR) ?: return@post
+                val nodeName = call.parameters["name"]
+                if (nodeName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                    return@post
+                }
+                auditLog(principal, operation = "server.drain", target = nodeName, result = "accepted")
+                call.respond(drainNode(nodeName))
+            }
+
+            // ノード自体の電源操作(SSH経由)。Cordon/Drainを行った上で、実際にシャットダウン/
+            // 再起動する。drainTimeoutSecondsの間だけPodの退避完了を待ち、タイムアウトしても
+            // 処理は続行する(無限に待たない)。
+            post("/api/servers/{name}/graceful-shutdown") {
+                val principal = requireRole(AdminRole.OPERATOR) ?: return@post
+                val nodeName = call.parameters["name"]
+                if (nodeName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                    return@post
+                }
+                val request = try {
+                    call.receive<GracefulShutdownRequestDto>()
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                    return@post
+                }
+                val timeout = request.drainTimeoutSeconds.coerceIn(0, 1800)
+                backgroundScope.launch {
+                    val result = gracefulNodeShutdown(nodeName, timeout, reboot = false)
+                    if (!result.success) logger.warn("graceful-shutdown of $nodeName failed: ${result.message}")
+                    auditLog(
+                        principal,
+                        operation = "server.graceful-shutdown",
+                        target = nodeName,
+                        result = if (result.success) "succeeded" else "failed",
+                        detail = result.message
+                    )
+                }
+                auditLog(
+                    principal,
+                    operation = "server.graceful-shutdown",
+                    target = nodeName,
+                    result = "started",
+                    detail = "drainTimeoutSeconds=$timeout"
+                )
+                call.respond(ActionResultDto(true, "シャットダウン処理を開始しました。進行状況は一覧の自動更新で確認できます。"))
+            }
+
+            post("/api/servers/{name}/graceful-reboot") {
+                val principal = requireRole(AdminRole.OPERATOR) ?: return@post
+                val nodeName = call.parameters["name"]
+                if (nodeName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                    return@post
+                }
+                val request = try {
+                    call.receive<GracefulShutdownRequestDto>()
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                    return@post
+                }
+                val timeout = request.drainTimeoutSeconds.coerceIn(0, 1800)
+                backgroundScope.launch {
+                    val result = gracefulNodeShutdown(nodeName, timeout, reboot = true)
+                    if (!result.success) logger.warn("graceful-reboot of $nodeName failed: ${result.message}")
+                    auditLog(
+                        principal,
+                        operation = "server.graceful-reboot",
+                        target = nodeName,
+                        result = if (result.success) "succeeded" else "failed",
+                        detail = result.message
+                    )
+                }
+                auditLog(
+                    principal,
+                    operation = "server.graceful-reboot",
+                    target = nodeName,
+                    result = "started",
+                    detail = "drainTimeoutSeconds=$timeout"
+                )
+                call.respond(ActionResultDto(true, "再起動処理を開始しました。進行状況は一覧の自動更新で確認できます。"))
+            }
+
+            delete("/api/pods/{namespace}/{name}") {
+                val principal = requireRole(AdminRole.OPERATOR) ?: return@delete
+                val namespace = call.parameters["namespace"]
+                val name = call.parameters["name"]
+                if (namespace.isNullOrBlank() || name.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing namespace or name"))
+                    return@delete
+                }
+                auditLog(principal, operation = "pod.delete", target = "$namespace/$name", result = "accepted")
+                call.respond(deletePod(namespace, name))
+            }
+
+            // ユーザー管理(kigawa-net realm・adminロールの管理者のみ)。Keycloak Admin REST APIを
+            // 専用サービスアカウント(client_credentials)経由で呼ぶ。
+            // サービスアカウント未設定の場合は503を返す。
+            get("/api/users") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@get
+                val users = listKeycloakUsers(httpClient)
+                if (users == null) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "user list unavailable"))
+                } else {
+                    call.respond(users)
+                }
+            }
+
+            post("/api/users") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@post
+                val request = try {
+                    call.receive<CreateUserRequest>()
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                    return@post
+                }
+                val created = createKeycloakUser(httpClient, request)
+                auditLog(
+                    principal,
+                    operation = "user.create",
+                    target = request.username,
+                    result = if (created.success) "accepted" else "failed",
+                    detail = created.message
+                )
+                call.respond(created)
+            }
+
+            delete("/api/users/{id}") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@delete
+                val userId = call.parameters["id"]
+                if (userId.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                    return@delete
+                }
+                val deleted = deleteKeycloakUser(httpClient, userId)
+                auditLog(
+                    principal,
+                    operation = "user.delete",
+                    target = userId,
+                    result = if (deleted.success) "accepted" else "failed",
+                    detail = deleted.message
+                )
+                call.respond(deleted)
+            }
+
+            post("/api/users/{id}/enable") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@post
+                val userId = call.parameters["id"]
+                if (userId.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                    return@post
+                }
+                val enabledResult = setKeycloakUserEnabled(httpClient, userId, enabled = true)
+                auditLog(
+                    principal,
+                    operation = "user.enable",
+                    target = userId,
+                    result = if (enabledResult.success) "accepted" else "failed",
+                    detail = enabledResult.message
+                )
+                call.respond(enabledResult)
+            }
+
+            post("/api/users/{id}/disable") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@post
+                val userId = call.parameters["id"]
+                if (userId.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                    return@post
+                }
+                val disabled = setKeycloakUserEnabled(httpClient, userId, enabled = false)
+                auditLog(
+                    principal,
+                    operation = "user.disable",
+                    target = userId,
+                    result = if (disabled.success) "accepted" else "failed",
+                    detail = disabled.message
+                )
+                call.respond(disabled)
+            }
+
+            post("/api/users/{id}/reset-password") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@post
+                val userId = call.parameters["id"]
+                if (userId.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing user id"))
+                    return@post
+                }
+                val request = try {
+                    call.receive<ResetPasswordRequest>()
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                    return@post
+                }
+                val reset = resetKeycloakUserPassword(httpClient, userId, request.newPassword, request.temporary)
+                auditLog(
+                    principal,
+                    operation = "user.reset-password",
+                    target = userId,
+                    result = if (reset.success) "accepted" else "failed",
+                    detail = reset.message
+                )
+                call.respond(reset)
+            }
+
+            // 組織管理(対象データはkigawa-net realm)。全組織の一覧・削除はadminロールの
+            // 管理者限定、作成・自分が所属する組織の閲覧・メンバー管理はkigawa-net realmの
+            // 一般ユーザーも行える。Keycloak Organizations REST APIを専用サービスアカウント
+            // (client_credentials)経由で呼ぶ。
+            get("/api/organizations") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@get
+                val organizations = listOrganizations(httpClient)
+                if (organizations == null) {
+                    call.respond(
+                        HttpStatusCode.ServiceUnavailable,
+                        mapOf("error" to (organizationApiUnavailableReason() ?: "組織一覧を取得できませんでした"))
+                    )
+                } else {
+                    call.respond(organizations)
+                }
+            }
+
+            // 組織の作成はkigawa-net realmにログインしているユーザーなら誰でも行える。
+            // 一般ユーザーが作成した場合は、作成者自身を自動的にその組織のメンバーとして登録する
+            // (でなければ作成した本人がその組織を一覧にも出せず操作もできなくなってしまう)。
+            post("/api/organizations") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@post
+                val request = try {
+                    call.receive<CreateOrganizationRequest>()
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                    return@post
+                }
+                val result = createOrganization(httpClient, request)
+                if (result.success && !principal.roles.contains(AdminRole.ADMIN)) {
+                    // 非adminの作成者を自動的にメンバーへ登録する(でなければ作成した本人が
+                    // その組織を一覧にも出せず操作もできなくなってしまう)。adminロールは
+                    // 全組織を扱えるため登録しない。
+                    val orgId = findOrganizationIdByName(httpClient, request.name)
+                    if (orgId != null) {
+                        addOrganizationMember(httpClient, orgId, principal.userId)
+                    }
+                }
+                auditLog(
+                    principal,
+                    operation = "organization.create",
+                    target = request.name,
+                    result = if (result.success) "accepted" else "failed"
+                )
+                call.respond(result)
+            }
+
+            delete("/api/organizations/{id}") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@delete
+                val orgId = call.parameters["id"]
+                if (orgId.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
+                    return@delete
+                }
+                val deleted = deleteOrganization(httpClient, orgId)
+                auditLog(
+                    principal,
+                    operation = "organization.delete",
+                    target = orgId,
+                    result = if (deleted.success) "accepted" else "failed",
+                    detail = deleted.message
+                )
+                call.respond(deleted)
+            }
+
+            get("/api/organizations/{id}/members") {
+                val orgId = call.parameters["id"]
+                if (orgId.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
+                    return@get
+                }
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                // RBACとは別に、組織スコープ(adminロール or メンバー本人)で絞り込む(issue #183)
+                if (!canManageOrganization(httpClient, principal, orgId)) {
+                    call.respond(HttpStatusCode.Forbidden, mapOf("error" to "not a member of this organization"))
+                    return@get
+                }
+                val members = listOrganizationMembers(httpClient, orgId)
+                if (members == null) {
+                    call.respond(
+                        HttpStatusCode.ServiceUnavailable,
+                        mapOf("error" to (organizationApiUnavailableReason() ?: "メンバー一覧を取得できませんでした"))
+                    )
+                } else {
+                    call.respond(members)
+                }
+            }
+
+            post("/api/organizations/{id}/members") {
+                val orgId = call.parameters["id"]
+                if (orgId.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id"))
+                    return@post
+                }
+                val principal = requireRole(AdminRole.VIEWER) ?: return@post
+                // RBACとは別に、組織スコープ(adminロール or メンバー本人)で絞り込む(issue #183)
+                if (!canManageOrganization(httpClient, principal, orgId)) {
+                    call.respond(HttpStatusCode.Forbidden, mapOf("error" to "not a member of this organization"))
+                    return@post
+                }
+                val request = try {
+                    call.receive<AddOrganizationMemberRequest>()
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid request body"))
+                    return@post
+                }
+                val result = addOrganizationMember(httpClient, orgId, request.userId)
+                auditLog(
+                    principal,
+                    operation = "organization.member.add",
+                    target = "$orgId/${request.userId}",
+                    result = if (result.success) "accepted" else "failed"
+                )
+                call.respond(result)
+            }
+
+            delete("/api/organizations/{id}/members/{userId}") {
+                val orgId = call.parameters["id"]
+                val userId = call.parameters["userId"]
+                if (orgId.isNullOrBlank() || userId.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing organization id or user id"))
+                    return@delete
+                }
+                val principal = requireRole(AdminRole.VIEWER) ?: return@delete
+                // RBACとは別に、組織スコープ(adminロール or メンバー本人)で絞り込む(issue #183)
+                if (!canManageOrganization(httpClient, principal, orgId)) {
+                    call.respond(HttpStatusCode.Forbidden, mapOf("error" to "not a member of this organization"))
+                    return@delete
+                }
+                val result = removeOrganizationMember(httpClient, orgId, userId)
+                auditLog(
+                    principal,
+                    operation = "organization.member.remove",
+                    target = "$orgId/$userId",
+                    result = if (result.success) "accepted" else "failed"
+                )
+                call.respond(result)
+            }
+
+            // 組織一覧のうち、呼び出したユーザー自身がメンバーになっているものだけを返す
+            // (一般ユーザー向け。全組織を見せるadmin専用の GET /api/organizations とは別)。
+            get("/api/organizations/mine") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                // subはJWTのsubクレームで得る(userinfoへの依存を断つ。issue #183)
+                val organizations = listMyOrganizations(httpClient, principal.userId)
+                if (organizations == null) {
+                    call.respond(
+                        HttpStatusCode.ServiceUnavailable,
+                        mapOf("error" to (organizationApiUnavailableReason() ?: "組織一覧を取得できませんでした"))
+                    )
+                } else {
+                    call.respond(organizations)
+                }
+            }
+
+            get("/api/organizations/users") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                val query = call.request.queryParameters["query"]
+                if (query.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing query"))
+                    return@get
+                }
+                val users = searchKigawaNetUsers(httpClient, query)
+                if (users == null) {
+                    call.respond(
+                        HttpStatusCode.ServiceUnavailable,
+                        mapOf("error" to (organizationApiUnavailableReason() ?: "ユーザー検索に失敗しました"))
+                    )
+                } else {
+                    call.respond(users)
+                }
+            }
+
+            // 物理ホスト(Proxmox)一覧+ハードウェア情報。管理者限定。VM/ディスク/PCI等の詳細は
+            // 呼び出し回数が多く遅くなりがちなため/api/infrastructure/detailsに分離しており、
+            // クライアントはこちらを先に表示してから詳細を非同期に読み込む。
+            get("/api/infrastructure") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                call.respond(fetchInfrastructureHosts())
+            }
+
+            // 物理ホストごとのVM一覧・ディスク・PCIデバイス詳細、およびVMとして見つからなかった
+            // K8sノード(物理専用ノード)一覧。管理者限定。
+            // composeAppとresource-usage-grouped集約が利用する一括取得用。siteのインフラ構成
+            // ページは下のホスト×カテゴリ単位の細粒度エンドポイントを使い、届いた部分から順次描画する。
+            get("/api/infrastructure/details") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                call.respond(fetchInfrastructureDetails())
+            }
+
+            // ホスト×カテゴリ単位の細粒度取得(issue #158)。フロントはこれらを並列に叩き、
+            // 届いた部分から順次描画するため、低速なカテゴリが他を道連れにしない。
+            // 失敗時は空コンテンツで200を返す(既存のグレースフルデグラデーション方針)。
+            get("/api/infrastructure/hosts/{host}/vms") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                val hostName = call.parameters["host"]
+                if (hostName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                    return@get
+                }
+                call.respond(fetchSingleHostVms(hostName))
+            }
+
+            get("/api/infrastructure/hosts/{host}/disks") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                val hostName = call.parameters["host"]
+                if (hostName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                    return@get
+                }
+                call.respond(fetchSingleHostDisks(hostName))
+            }
+
+            get("/api/infrastructure/hosts/{host}/pci") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                val hostName = call.parameters["host"]
+                if (hostName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                    return@get
+                }
+                call.respond(fetchSingleHostPciDevices(hostName))
+            }
+
+            get("/api/infrastructure/hosts/{host}/hw-status") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                val hostName = call.parameters["host"]
+                if (hostName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                    return@get
+                }
+                call.respond(fetchSingleHostHwStatus(hostName))
+            }
+
+            // Proxmox物理ホストのデバイス空きスロット調査(admin-panel#156)。SSHでホストに
+            // 直接入りdmidecode/lsblkで取得する。認証情報(Bitwarden同期の
+            // admin-panel-proxmox-ssh)未設定の間は503を返すのみで、他機能には影響しない。
+            get("/api/infrastructure/hosts/{host}/slots") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                if (!isProxmoxSshConfigured) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Proxmox SSH not configured"))
+                    return@get
+                }
+                val hostName = call.parameters["host"]
+                if (hostName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                    return@get
+                }
+                call.respond(fetchHostSlotInventory(hostName))
+            }
+
+            // k8sノードのデバイス空きスロット調査(Proxmoxホスト向けのフォローアップ)。
+            // ノードIPはKubernetes APIのInternalIPで解決し、認証情報はNODE_SSH_*を使う。
+            // KVMゲスト等の仮想ノードは物理スロットの概念がないためvirtualized=trueで返し、
+            // フロント側で表示を抑止する。ionosゲートウェイ(クラウドVPS)は対象外。
+            // 未設定の間は503を返すのみで、他機能には影響しない。
+            get("/api/infrastructure/nodes/{node}/slots") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                if (!isNodeSshConfigured) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Node SSH not configured"))
+                    return@get
+                }
+                val nodeName = call.parameters["node"]
+                if (nodeName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                    return@get
+                }
+                call.respond(fetchNodeSlotInventory(nodeName))
+            }
+
+            // マウントポイント別ディスク使用率(admin-panel#148)。Prometheusにnode-exporterが
+            // なく`node_filesystem_*`が存在しないため時系列グラフにはせず、SSHでdfを実行した
+            // 現在値を返す。空きスロット取得とは独立にしているため、フロントは両者を並列に
+            // 叩ける(#158の「低速なカテゴリが他を道連れにしない」方針と同じ)。
+            // 認証情報(Proxmox SSH)未設定の間は503を返すのみで、他機能には影響しない。
+            get("/api/infrastructure/hosts/{host}/disk-usage") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                if (!isProxmoxSshConfigured) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Proxmox SSH not configured"))
+                    return@get
+                }
+                val hostName = call.parameters["host"]
+                if (hostName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing host name"))
+                    return@get
+                }
+                call.respond(fetchHostDiskUsage(hostName))
+            }
+
+            // K8sノードのマウントポイント別ディスク使用率(admin-panel#148)。ノードIPは
+            // Kubernetes APIのInternalIPで解決し、認証情報はNODE_SSH_*を使う。
+            // 未設定の間は503を返すのみで、他機能には影響しない。
+            get("/api/infrastructure/nodes/{node}/disk-usage") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                if (!isNodeSshConfigured) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Node SSH not configured"))
+                    return@get
+                }
+                val nodeName = call.parameters["node"]
+                if (nodeName.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing node name"))
+                    return@get
+                }
+                call.respond(fetchNodeDiskUsage(nodeName))
+            }
+
+            // インフラのリソース利用量の時系列(物理ホスト=Proxmox rrddata / K8sノード=Prometheus
+            // cAdvisor)。グラフ表示用(issue #132)。rangeMinutes は15〜1440(既定60)で、グラフの
+            // 描画点を抑えるためトラフィック時系列と同じく最大120点程度に丸める。
+            get("/api/infrastructure/resource-usage") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                val rangeMinutes =
+                    call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(15, 1440) ?: 60
+
+                val (physicalHosts, k8sNodes) = coroutineScope<Pair<Map<String, PhysicalHostUsageDto>, Map<String, K8sNodeUsageDto>>> {
+                    val physicalDeferred = async { fetchPhysicalHostUsage(rangeMinutes) }
+                    val k8sDeferred = async { fetchNodeResourceUsageSeries(rangeMinutes) }
+                    physicalDeferred.await() to k8sDeferred.await()
+                }
+
+                call.respond(
+                    InfrastructureResourceUsageResponse(
+                        rangeMinutes = rangeMinutes,
+                        physicalHosts = physicalHosts,
+                        k8sNodes = k8sNodes
+                    )
+                )
+            }
+
+            // インフラのリソース使用量をグルーピングして集約した時系列(issue #147)。
+            // role / pciType / physicalHost の3軸で集約し、フロント側でタブ切り替えできるようにする。
+            get("/api/infrastructure/resource-usage-grouped") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@get
+                val rangeMinutes =
+                    call.request.queryParameters["rangeMinutes"]?.toIntOrNull()?.coerceIn(15, 1440) ?: 60
+
+                // ノード単位の生データを取得してから、各軸で集約する
+                val nodeSeriesRaw = fetchNodeResourceUsageSeries(rangeMinutes)
+                val infraDetails = fetchInfrastructureDetails()  // Proxmoxホスト-VMマッピング用
+
+                // K8sNodeUsageDto を NodeResourceUsageSeries に変換
+                val nodeSeries = nodeSeriesRaw.mapValues { (_, dto) ->
+                    NodeResourceUsageSeries(
+                        cpuCores = dto.cpuCores.map { it.timestampSeconds to it.value },
+                        memGiB = dto.memGiB.map { it.timestampSeconds to it.value }
+                    )
+                }
+                // グループ容量合計用にノード単位の容量を保持(容量不明ノードは除外)
+                val nodeCapacity = nodeSeriesRaw.mapNotNull { (name, dto) ->
+                    val cpu = dto.cpuCapacityCores?.toDouble()
+                    val mem = dto.memCapacityGiB
+                    if (cpu == null && mem == null) null else name to ((cpu ?: 0.0) to (mem ?: 0.0))
+                }.toMap()
+
+                // ノード名 → PCIタイプ / 物理ホスト のマッピングを作成
+                val nodeToPciType = mutableMapOf<String, String>()
+                val nodeToPhysicalHost = mutableMapOf<String, String>()
+                val nodeToRole = mutableMapOf<String, String>()
+
+                // fetchServerStatuses() で role を取得
+                fetchServerStatuses()?.servers?.forEach { server ->
+                    nodeToRole[server.name] = server.role
+                }
+
+                // infraDetails.hostDetails から VM→物理ホスト、PCIタイプを解決
+                infraDetails.hostDetails.forEach { (hostName, details) ->
+                    details.vms.forEach { vm ->
+                        nodeToPhysicalHost[vm.name] = hostName
+                        // PCIタイプは最初のデバイスから代表的なものを決定
+                        val pciType = details.pciDevices.firstOrNull()?.let { classifyPciType(it) } ?: "Other"
+                        nodeToPciType[vm.name] = pciType
+                    }
+                    // standaloneNodes も対象
+                    details.vms.forEach { vm ->
+                        if (!nodeToPhysicalHost.containsKey(vm.name)) {
+                            nodeToPhysicalHost[vm.name] = hostName
+                        }
+                    }
+                }
+                infraDetails.standaloneNodes.forEach { node ->
+                    nodeToPhysicalHost[node.name] = "standalone"
+                    nodeToPciType[node.name] = "Other"
+                }
+
+                // 各軸で集約
+                val byRole = aggregateByKey(nodeSeries, nodeToRole, nodeCapacity)
+                val byPciType = aggregateByKey(nodeSeries, nodeToPciType, nodeCapacity)
+                val byPhysicalHost = aggregateByKey(nodeSeries, nodeToPhysicalHost, nodeCapacity)
+
+                call.respond(
+                    GroupedResourceUsageResponse(
+                        rangeMinutes = rangeMinutes,
+                        byRole = byRole,
+                        byPciType = byPciType,
+                        byPhysicalHost = byPhysicalHost
+                    )
+                )
+            }
+
+            // GitHub App (kigawa-net, app_id 4316503) operation: mint scoped installation tokens
+            // in place of the long-lived org PAT. Admin-only, since a minted token can act with up
+            // to the App's full contents:write permission.
+            get("/api/github-app/installations") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@get
+                if (!GithubApp.isConfigured) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
+                    return@get
+                }
+                call.respond(GithubApp.listInstallations(httpClient))
+            }
+
+            post("/api/github-app/installations/{id}/token") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@post
+                if (!GithubApp.isConfigured) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
+                    return@post
+                }
+                val installationId = call.parameters["id"]?.toLongOrNull()
+                if (installationId == null) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid installation id"))
+                    return@post
+                }
+                val request = call.receive<GithubInstallationTokenRequest>()
+                auditLog(
+                    principal,
+                    operation = "github-app.installation-token",
+                    target = installationId.toString(),
+                    result = "accepted"
+                )
+                call.respond(
+                    GithubApp.createInstallationToken(
+                        httpClient,
+                        installationId,
+                        repositories = request.repositories,
+                        permissions = request.permissions
+                    )
+                )
+            }
+
+
+            // admin-panel#64: 上のci-tokenブローカーが参照する呼び出し元リポジトリ別許可設定
+            // (ci_token_policy)を管理画面から追加・編集・削除できるようにするCRUD。管理者限定。
+            get("/api/github-app/ci-policy") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@get
+                if (!isDatabaseConfigured) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
+                    return@get
+                }
+                call.respond(listCiTokenPolicies())
+            }
+
+            put("/api/github-app/ci-policy/{callerRepository}") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@put
+                if (!isDatabaseConfigured) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
+                    return@put
+                }
+                val callerRepository = call.parameters["callerRepository"]
+                if (callerRepository.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing callerRepository"))
+                    return@put
+                }
+                val request = call.receive<CiTokenPolicyEntryDto>()
+                if (request.callerRepository != callerRepository) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "callerRepository mismatch"))
+                    return@put
+                }
+                upsertCiTokenPolicy(request)
+                auditLog(principal, operation = "ci-policy.upsert", target = callerRepository, result = "accepted")
+                call.respond(request)
+            }
+
+            delete("/api/github-app/ci-policy/{callerRepository}") {
+                val principal = requireRole(AdminRole.ADMIN) ?: return@delete
+                if (!isDatabaseConfigured) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
+                    return@delete
+                }
+                val callerRepository = call.parameters["callerRepository"]
+                if (callerRepository.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "missing callerRepository"))
+                    return@delete
+                }
+                val deleted = deleteCiTokenPolicy(callerRepository)
+                auditLog(
+                    principal,
+                    operation = "ci-policy.delete",
+                    target = callerRepository,
+                    result = if (deleted) "accepted" else "failed"
+                )
+                if (deleted) {
+                    call.respond(HttpStatusCode.OK, mapOf("deleted" to "true"))
+                } else {
+                    call.respond(HttpStatusCode.NotFound, mapOf("error" to "not found"))
+                }
             }
         }
     }
 }
 
 /**
- * kigawa-net realmのトークンのうち、admin-panelクライアントの admin ロールを持つ
- * 管理者のみ許可。サーバー管理(閲覧・操作)エンドポイントで使う。
- * kigawa-net realmは誰でもセルフ登録できる(registrationAllowed=true)ため、
- * ロールが確認できないトークンは管理者扱いにしない(全員admin化の防止)。
+ * 組織の操作(メンバー閲覧・追加・削除)を許可するか判定する(issue #183)。
+ * RBACとOrganization scopeは別概念で、ここは Organization scope 側の判定になる:
+ * - adminロール(RBAC)を持つ人は常に許可
+ * - それ以外は、指定組織のメンバー本人(subがメンバーシップに一致)のみ許可
+ * (従来は isValidAdminToken() が全ログインユーザーでtrueになっていたため、
+ * 誰でも全組織のメンバー操作ができてしまう状態だった)
  */
-private suspend fun isValidAdminToken(client: HttpClient, token: String): Boolean {
-    val userInfo = fetchUserInfo(client, adminRealmUserInfoUrl, token) ?: return false
-    return userInfoHasAdminRole(userInfo)
-}
-
-/** kigawa-net realmの有効なトークン(ロール不問)。ダッシュボード系・一般ユーザー向け
- * エンドポイントで使う。以前は管理用realm(manage)も別途許可していたが、
- * issue #155でkigawa-netに統合したため、kigawa-netの有効トークン判定のみとなる。 */
-private suspend fun isValidAnyToken(client: HttpClient, token: String): Boolean =
-    fetchUserInfo(client, adminRealmUserInfoUrl, token) != null
-
-/** userinfoに有効なトークンならその応答本文を、無効ならnullを返す。 */
-private suspend fun fetchUserInfo(client: HttpClient, userInfoUrl: String, token: String): String? {
-    return try {
-        val response: HttpResponse = client.get(userInfoUrl) {
-            header(HttpHeaders.Authorization, "Bearer $token")
-        }
-        if (response.status == HttpStatusCode.OK) response.bodyAsText() else null
-    } catch (e: Exception) {
-        null
-    }
-}
-
-/** userinfo応答(JSON)から admin ロールの有無を判定する。 */
-private fun userInfoHasAdminRole(userInfoBody: String): Boolean {
-    return try {
-        val root = Json.parseToJsonElement(userInfoBody).jsonObject
-        // ユーザークライアントロールのマッパー(multivalued)はトップレベルの roles に配列で出る想定
-        if (elementHasAdminRole(root["roles"])) return true
-        // 形式の揺れ対応: realm_access.roles / resource_access["admin-panel"].roles
-        val realmAccess = root["realm_access"] as? JsonObject
-        if (elementHasAdminRole(realmAccess?.get("roles"))) return true
-        val resourceAccess = root["resource_access"] as? JsonObject
-        // resource_accessはクライアントIDごとの入れ子なので、admin-panelクライアント分のみ見る
-        val adminPanelAccess = resourceAccess?.get("admin-panel")
-        return elementHasAdminRole(adminPanelAccess)
-    } catch (e: Throwable) {
-        // 応答がJSONでない等は管理者扱いにしない(安全側)
-        false
-    }
-}
-
-/** ロール表現(配列/オブジェクト/文字列)に admin が含まれるか判定する。 */
-private fun elementHasAdminRole(element: JsonElement?): Boolean = when (element) {
-    is JsonArray -> element.any { it is JsonPrimitive && it.content == "admin" }
-    is JsonObject -> element.containsKey("admin") || element.values.any { elementHasAdminRole(it) }
-    is JsonPrimitive -> element.content == "admin"
-    else -> false
-}
-
-@Serializable
-private data class UserInfoSubDto(val sub: String)
-
-/** userinfoエンドポイントからそのrealmでのユーザーID(sub)を取得する。トークンがそのrealmのものでなければnull。 */
-private suspend fun getUserId(client: HttpClient, userInfoUrl: String, token: String): String? {
-    return try {
-        val response: HttpResponse = client.get(userInfoUrl) {
-            header(HttpHeaders.Authorization, "Bearer $token")
-        }
-        if (response.status == HttpStatusCode.OK) response.body<UserInfoSubDto>().sub else null
-    } catch (e: Exception) {
-        null
-    }
-}
-
-/**
- * 組織の操作(メンバー閲覧・追加・削除)を許可するか判定する。adminロールを持つ管理者は
- * 常に許可、同じ組織のメンバー本人である場合のみ許可する。
- * issue #155でkigawa-net realmに統合されたため、subの比較はkigawa-netのuserinfoと
- * 組織メンバーのIDで行われる。 */
-private suspend fun canManageOrganization(client: HttpClient, token: String, orgId: String): Boolean {
-    if (isValidAdminToken(client, token)) return true
-    val userId = getUserId(client, adminRealmUserInfoUrl, token) ?: return false
+private suspend fun canManageOrganization(
+    client: HttpClient,
+    principal: AdminPrincipal,
+    orgId: String
+): Boolean {
+    if (principal.roles.contains(AdminRole.ADMIN)) return true
     val members = listOrganizationMembers(client, orgId) ?: return false
-    return members.members.any { it.id == userId }
+    return members.members.any { it.id == principal.userId }
 }
 
 private suspend fun queryTraffic(client: HttpClient, rangeMinutes: Int): TrafficResponse {

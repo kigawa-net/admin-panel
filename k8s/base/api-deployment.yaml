@@ -40,6 +40,19 @@ spec:
             # ため、adminロールの有無で管理者を判定する。
             - name: KEYCLOAK_ADMIN_USERINFO_URL
               value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
+            # RBAC認証(issue #183)でアクセストークンを検証するためのJWKS(certs)とissuer。
+            # 検証内容は signature(JWKS)・iss・exp・aud(admin-panel)で、認可は
+            # client role(viewer/operator/admin)で判定する。いずれも秘密情報ではない。
+            # 未指定でもコード内の既定値(kigawa-net realm)と同じになる。
+            - name: KEYCLOAK_JWKS_URL
+              value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/certs"
+            - name: KEYCLOAK_ISSUER
+              value: "https://user.kigawa.net/realms/kigawa-net"
+            # 緊急回避用(既定はtrue=厳格)。falseにすると「ログイン済み=全許可(=admin扱い)」の
+            # 旧来どおりの挙動にフォールバックする。Keycloak側(client role/audience mapper)の
+            # 適用前にAPIだけを出したい場合にのみ一時的に設定する。
+            # - name: KEYCLOAK_RBAC_ENFORCED
+            #   value: "false"
             # ユーザー管理機能(一覧・作成・削除・有効/無効・パスワードリセット)が使う、
             # Keycloak Admin REST API専用のサービスアカウント(client_credentials)。
             # issue #155で管理用realm(manage)のadmin-panel-serviceから、kigawa-net realmの

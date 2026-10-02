@@ -12,6 +12,9 @@ dependencies {
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.content.negotiation)
+    // issue #183: Keycloak client roleによるRBAC認証(Ktor Authentication/JWT)。
+    // ktor-server-auth は ktor-server-auth-jwt が依存して取り込む。
+    implementation(libs.ktor.server.auth.jwt)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
     implementation(libs.ktor.client.okhttp)
@@ -26,6 +29,8 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.ktor.client.mock)
+    // issue #183: 認証・認可ケースの自動テスト用
+    testImplementation(libs.ktor.server.test.host)
 }
 
 kotlin {
