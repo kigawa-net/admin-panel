@@ -21,11 +21,13 @@ import kotlinx.coroutines.withContext
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
-import java.security.cert.X509Certificate
 import java.net.URL
+import java.security.cert.X509Certificate
+import java.net.HttpURLConnection
 
 /**
  * issue #183: Keycloak client role(admin-panel)によるRBAC認可。
@@ -201,36 +203,27 @@ class RefreshingJwkProvider(
     }
 
     private fun doFetch(): List<Jwk> = fetchOverride?.invoke()
-        ?: UrlJwkProvider(createUrlWithCustomSSL(jwksUrl), connectTimeoutMillis, connectTimeoutMillis).getAll()
-
-    /**
-     * JWKS取得用のURLを作成し、内部通信用にSSL証明書検証をスキップするカスタムSSLContextを設定する。
-     * 内部クラスタ通信ではKeycloakの自己署名証明書を信頼するため、ホスト名検証を無効化する。
-     */
-    private fun createUrlWithCustomSSL(urlString: String): URL {
-        val url = java.net.URI(jwksUrl).toURL()
-        // 内部クラスタ通信ではSSL証明書検証をスキップする（Keycloakの自己署名証明書を信頼）
-        // 注意: 本番環境では適切な証明書管理を行うこと
-        if (url.protocol == "https" && (url.host.contains("keycloak") || url.host.contains("user.kigawa.net"))) {
-            // デフォルトのSSLContextを一度だけ置き換える
-            if (!SSLContext.getDefault().toString().contains("InsecureSSLContext")) {
-                try {
-                    val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
-                        override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
-                        override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
-                        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-                    })
-                    val sslContext = SSLContext.getInstance("TLS")
-                    sslContext.init(null, trustAllCerts, java.security.SecureRandom())
-                    HttpsURLConnection.setDefaultSSLSocketFactory(sslContext.socketFactory)
-                    HttpsURLConnection.setDefaultHostnameVerifier { _, _ -> true }
-                } catch (e: Exception) {
-                    logger.warn("カスタムSSLContextの設定に失敗しました（デフォルトを使用します）", e)
-                }
+        ?: UrlJwkProvider(
+            java.net.URI(jwksUrl).toURL(),
+            connectTimeoutMillis,
+            connectTimeoutMillis,
+            null,
+            emptyMap()
+        ).apply {
+            // 内部通信用：証明書検証をスキップする（Keycloakの自己署名証明書を信頼）
+            // 注意: 本番環境では適切な証明書管理を行うこと
+            if (this is HttpsURLConnection) {
+                val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+                    override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+                    override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+                    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+                })
+                val sslContext = SSLContext.getInstance("TLS")
+                sslContext.init(null, trustAllCerts, java.security.SecureRandom())
+                this.sslSocketFactory = sslContext.socketFactory
+                this.hostnameVerifier = HostnameVerifier { hostname: String, session: javax.net.ssl.SSLSession -> true }
             }
-        }
-        return url
-    }
+        }.getAll()
 
     companion object {
         const val DEFAULT_CACHE_TTL_MILLIS = 10 * 60 * 1000L
