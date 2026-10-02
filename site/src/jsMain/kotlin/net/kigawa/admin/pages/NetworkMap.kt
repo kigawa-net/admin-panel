@@ -9,6 +9,7 @@ import com.varabyte.kobweb.core.Page
 import com.varabyte.kobweb.core.rememberPageContext
 import kotlinx.browser.localStorage
 import net.kigawa.admin.auth.AuthGuard
+import net.kigawa.admin.auth.PagePermission
 import net.kigawa.admin.layout.AppShell
 import net.kigawa.admin.networkmap.NetworkMapPage
 
@@ -17,8 +18,9 @@ import net.kigawa.admin.networkmap.NetworkMapPage
 fun NetworkMapRoute() {
     val ctx = rememberPageContext()
     // ネットワークマップはサーバー側でも所属組織で絞り込んで一般ユーザーに開放している
-    // ため、管理者専用にはしない(AppShellのナビ表記と合わせる)。
-    AuthGuard(requireAdmin = false) { state, _, provider ->
+    // ため、adminロール要求はしない(issue #155の判断)。ただし表示には viewer 権限を
+    // 要求する(AppShellのナビ表記と合わせる)。
+    AuthGuard(requirePermission = PagePermission.VIEW_INFRASTRUCTURE) { state, _, provider ->
         var currentOrgId by remember { mutableStateOf<String?>(localStorage.getItem("selectedOrgId")) }
         val onOrgChange: (String?) -> Unit = { orgId ->
             currentOrgId = orgId
@@ -29,7 +31,7 @@ fun NetworkMapRoute() {
             }
         }
         AppShell(
-            isAdmin = state.isAdmin,
+            rbac = state.rbac,
             accessToken = state.accessToken,
             currentOrgId = currentOrgId,
             onOrgChange = onOrgChange,

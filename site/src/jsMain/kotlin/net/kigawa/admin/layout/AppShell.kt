@@ -29,6 +29,8 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
+import net.kigawa.admin.auth.PagePermission
+import net.kigawa.admin.auth.RbacPermissions
 import net.kigawa.admin.organizations.Organization
 import net.kigawa.admin.organizations.fetchMyOrganizations
 import org.jetbrains.compose.web.css.Color
@@ -36,21 +38,27 @@ import org.jetbrains.compose.web.css.px
 import org.jetbrains.compose.web.css.rgba
 import kotlinx.coroutines.launch
 
-private data class NavItem(val label: String, val path: String, val adminOnly: Boolean = false)
+private data class NavItem(
+    val label: String,
+    val path: String,
+    // 表示に必要な権限(issue #183)。nullなら全ログインユーザーに表示。
+    // 表示制御はUX用であり、最終的な認可はサーバー側のRBACが行う。
+    val permission: PagePermission? = null
+)
 
 private val NAV_ITEMS = listOf(
     NavItem("ダッシュボード", "/"),
     NavItem("ネットワークマップ", "/network-map"),
-    NavItem("ユーザー管理", "/users", adminOnly = true),
+    NavItem("ユーザー管理", "/users", permission = PagePermission.MANAGE_USERS),
     NavItem("組織管理", "/organizations"),
-    NavItem("インフラ構成", "/infrastructure", adminOnly = true),
-    NavItem("GitHub App", "/github-app", adminOnly = true)
+    NavItem("インフラ構成", "/infrastructure", permission = PagePermission.VIEW_INFRASTRUCTURE),
+    NavItem("GitHub App", "/github-app", permission = PagePermission.MANAGE_GITHUB_APP)
 )
 
 /** ログイン後の全ページを、常時表示のサイドナビゲーション付きレイアウトで包む。 */
 @Composable
 fun AppShell(
-    isAdmin: Boolean,
+    rbac: RbacPermissions,
     accessToken: String,
     currentOrgId: String?,
     onOrgChange: (String?) -> Unit,
@@ -112,7 +120,8 @@ fun AppShell(
                 SpanText("組織を読み込み中...", modifier = Modifier.padding(20.px).fontSize(FontSize.Small).color(Colors.Gray))
             }
 
-            NAV_ITEMS.filter { !it.adminOnly || isAdmin }.forEach { item ->
+            // 権限のないメニューは表示しない(表示制御はUX用。境界はサーバー側のRBAC)
+            NAV_ITEMS.filter { it.permission == null || rbac.hasPermission(it.permission) }.forEach { item ->
                 val active = currentPath == item.path
                 val rowModifier = Modifier
                     .fillMaxWidth()

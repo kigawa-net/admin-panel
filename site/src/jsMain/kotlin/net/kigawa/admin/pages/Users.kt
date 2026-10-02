@@ -9,6 +9,7 @@ import com.varabyte.kobweb.core.Page
 import com.varabyte.kobweb.core.rememberPageContext
 import kotlinx.browser.localStorage
 import net.kigawa.admin.auth.AuthGuard
+import net.kigawa.admin.auth.PagePermission
 import net.kigawa.admin.layout.AppShell
 import net.kigawa.admin.users.UserManagementPage
 
@@ -16,7 +17,8 @@ import net.kigawa.admin.users.UserManagementPage
 @Composable
 fun UsersRoute() {
     val ctx = rememberPageContext()
-    AuthGuard(requireAdmin = true) { state, _, provider ->
+    // ユーザー管理は admin ロールのみ(issue #183)
+    AuthGuard(requirePermission = PagePermission.MANAGE_USERS) { state, _, provider ->
         var currentOrgId by remember { mutableStateOf<String?>(localStorage.getItem("selectedOrgId")) }
         val onOrgChange: (String?) -> Unit = { orgId ->
             currentOrgId = orgId
@@ -27,7 +29,7 @@ fun UsersRoute() {
             }
         }
         AppShell(
-            isAdmin = state.isAdmin,
+            rbac = state.rbac,
             accessToken = state.accessToken,
             currentOrgId = currentOrgId,
             onOrgChange = onOrgChange,

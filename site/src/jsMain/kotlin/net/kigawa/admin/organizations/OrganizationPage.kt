@@ -26,6 +26,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import net.kigawa.admin.auth.RbacPermissions
 import net.kigawa.admin.common.ErrorStateWithRetry
 import org.jetbrains.compose.web.css.Color
 import org.jetbrains.compose.web.css.px
@@ -38,7 +39,7 @@ private sealed class OrganizationListUiState {
 }
 
 @Composable
-fun OrganizationPage(accessToken: String, isAdmin: Boolean, onBack: () -> Unit) {
+fun OrganizationPage(accessToken: String, rbac: RbacPermissions, onBack: () -> Unit) {
     var state by remember { mutableStateOf<OrganizationListUiState>(OrganizationListUiState.Loading) }
     var refreshKey by remember { mutableStateOf(0) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
@@ -55,7 +56,9 @@ fun OrganizationPage(accessToken: String, isAdmin: Boolean, onBack: () -> Unit) 
 
     LaunchedEffect(accessToken, refreshKey) {
         state = try {
-            val organizations = if (isAdmin) {
+            // adminロールは組織を全件表示し、それ以外は所属組織のみ表示する。
+            // 表示制御はUX用であり、最終的な認可はサーバー側のRBACが行う(issue #183)。
+            val organizations = if (rbac.isAdmin) {
                 fetchOrganizations(httpClient, accessToken).organizations
             } else {
                 fetchMyOrganizations(httpClient, accessToken).organizations
@@ -142,14 +145,15 @@ fun OrganizationPage(accessToken: String, isAdmin: Boolean, onBack: () -> Unit) 
                 is OrganizationListUiState.Loaded -> {
                     if (current.organizations.isEmpty()) {
                         SpanText(
-                            if (isAdmin) "組織はまだありません" else "所属している組織はまだありません",
+                            if (rbac.isAdmin) "組織はまだありません" else "所属している組織はまだありません",
                             modifier = Modifier.color(Colors.Gray)
                         )
                     }
                     current.organizations.forEach { org ->
                         OrganizationCard(
                             organization = org,
-                            canDelete = isAdmin,
+                            // 組織削除は admin ロールのみ(表示制御はUX用。境界はサーバー側)
+                            canDelete = rbac.isAdmin,
                             onManageMembers = { selectedOrg = org },
                             onDelete = {
                                 if (window.confirm("${org.name} を削除しますか?元に戻せません。")) {

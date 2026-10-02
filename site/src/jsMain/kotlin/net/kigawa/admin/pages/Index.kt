@@ -20,6 +20,8 @@ import com.varabyte.kobweb.core.rememberPageContext
 import com.varabyte.kobweb.silk.components.forms.Button
 import com.varabyte.kobweb.silk.components.text.SpanText
 import net.kigawa.admin.auth.AuthGuard
+import net.kigawa.admin.auth.PagePermission
+import net.kigawa.admin.auth.RbacPermissions
 import net.kigawa.admin.layout.AppShell
 import kotlinx.browser.localStorage
 import org.jetbrains.compose.web.css.*
@@ -28,7 +30,8 @@ import org.jetbrains.compose.web.css.*
 @Composable
 fun HomePage() {
     val ctx = rememberPageContext()
-    AuthGuard { state, logout, provider ->
+    // ダッシュボードは viewer 以上を要求(issue #183)
+    AuthGuard(requirePermission = PagePermission.VIEW_INFRASTRUCTURE) { state, logout, provider ->
         var currentOrgId by remember { mutableStateOf<String?>(localStorage.getItem("selectedOrgId")) }
         val onOrgChange: (String?) -> Unit = { orgId ->
             currentOrgId = orgId
@@ -39,7 +42,7 @@ fun HomePage() {
             }
         }
         AppShell(
-            isAdmin = state.isAdmin,
+            rbac = state.rbac,
             accessToken = state.accessToken,
             currentOrgId = currentOrgId,
             onOrgChange = onOrgChange,
@@ -47,7 +50,7 @@ fun HomePage() {
         ) {
             DashboardPage(
                 username = state.username,
-                isAdmin = state.isAdmin,
+                rbac = state.rbac,
                 onLogout = logout,
                 onOpenNetworkMap = { ctx.router.navigateTo("/network-map") },
                 onOpenUsers = { ctx.router.navigateTo("/users") },
@@ -62,7 +65,7 @@ fun HomePage() {
 @Composable
 private fun DashboardPage(
     username: String,
-    isAdmin: Boolean,
+    rbac: RbacPermissions,
     onLogout: () -> Unit,
     onOpenNetworkMap: () -> Unit,
     onOpenUsers: () -> Unit,
@@ -163,7 +166,9 @@ private fun DashboardPage(
                 )
             }
 
-            if (isAdmin) {
+            // 権限カードは権限のあるユーザーだけ表示する(表示制御はUX用。
+            // 最終的な認可はサーバー側のRBACが行う。issue #183)
+            if (rbac.canManageUsers) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -183,7 +188,9 @@ private fun DashboardPage(
                         modifier = Modifier.color(Colors.Gray)
                     )
                 }
+            }
 
+            if (rbac.canManageGithubApp) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -203,7 +210,9 @@ private fun DashboardPage(
                         modifier = Modifier.color(Colors.Gray)
                     )
                 }
+            }
 
+            if (rbac.canViewInfrastructure) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()

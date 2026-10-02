@@ -9,14 +9,16 @@ import com.varabyte.kobweb.core.Page
 import com.varabyte.kobweb.core.rememberPageContext
 import kotlinx.browser.localStorage
 import net.kigawa.admin.auth.AuthGuard
-import net.kigawa.admin.layout.AppShell
+import net.kigawa.admin.auth.PagePermission
 import net.kigawa.admin.githubapp.GithubAppPage
+import net.kigawa.admin.layout.AppShell
 
 @Page("/github-app")
 @Composable
 fun GithubAppRoute() {
     val ctx = rememberPageContext()
-    AuthGuard(requireAdmin = true) { state, _, provider ->
+    // GitHub App token発行・CI token policyは admin ロールのみ(issue #183)
+    AuthGuard(requirePermission = PagePermission.MANAGE_GITHUB_APP) { state, _, provider ->
         var currentOrgId by remember { mutableStateOf<String?>(localStorage.getItem("selectedOrgId")) }
         val onOrgChange: (String?) -> Unit = { orgId ->
             currentOrgId = orgId
@@ -27,7 +29,7 @@ fun GithubAppRoute() {
             }
         }
         AppShell(
-            isAdmin = state.isAdmin,
+            rbac = state.rbac,
             accessToken = state.accessToken,
             currentOrgId = currentOrgId,
             onOrgChange = onOrgChange,

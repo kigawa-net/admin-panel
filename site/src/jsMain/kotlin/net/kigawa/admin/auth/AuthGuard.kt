@@ -26,14 +26,39 @@ import org.jetbrains.compose.web.css.px
 import org.jetbrains.compose.web.css.rgba
 
 /**
+ * ページが要求する権限(issue #183)。
+ * 表示制御はUX用であり、最終的な認可は必ずサーバー側のKtor API(requireRole)が
+ * 同じロールで再判定する。
+ */
+enum class PagePermission {
+    /** サーバー・ネットワーク・インフラ・メトリクスの閲覧(viewer) */
+    VIEW_INFRASTRUCTURE,
+    /** Cordon/Drain/Pod再起動・電源操作(operator) */
+    OPERATE_SERVERS,
+    /** ユーザー管理・組織削除など(admin) */
+    MANAGE_USERS,
+    /** GitHub App token発行・CI token policy(admin) */
+    MANAGE_GITHUB_APP
+}
+
+/** [PagePermission] を [RbacPermissions] に解決する。 */
+private fun RbacPermissions.hasPermission(permission: PagePermission): Boolean = when (permission) {
+    PagePermission.VIEW_INFRASTRUCTURE -> canViewInfrastructure
+    PagePermission.OPERATE_SERVERS -> canOperateServers
+    PagePermission.MANAGE_USERS -> canManageUsers
+    PagePermission.MANAGE_GITHUB_APP -> canManageGithubApp
+}
+
+/**
  * Shared Keycloak auth handling for every route: shows the login screen when unauthenticated,
- * surfaces auth errors, and (when [requireAdmin]) bounces non-admins back to "/" instead of
- * rendering [content]. 管理者は userinfo のロール(admin-panelのadminロール)で判定する。
+ * surfaces auth errors, and (when [requirePermission] is set) bounces users who lack the
+ * permission back to "/" instead of rendering [content].
+ * 権限は userinfo のロール(admin-panelのclient role)から計算する。
  * Each `@Page` wraps its body in this instead of duplicating the auth dance.
  */
 @Composable
 fun AuthGuard(
-    requireAdmin: Boolean = false,
+    requirePermission: PagePermission? = null,
     content: @Composable (
         state: AuthState.Authenticated,
         logout: () -> Unit,
@@ -69,11 +94,13 @@ fun AuthGuard(
             LoginPage(isLoading = true, onLogin = {})
         }
         is AuthState.Authenticated -> {
-            // kigawa-net realmは誰でもセルフ登録できるため、認証済みだけでは管理者に
-            // しない。管理者専用ページは userinfo のロール(admin-panelのadminロール)が
-            // 確認できたユーザー(state.isAdmin)のみ表示し、それ以外はダッシュボードへ
-            // 戻す。表示上の判定だけで、最終的な権限はサーバー側のRBACでも再判定する。
-            if (requireAdmin && !state.isAdmin) {
+            // kigawa-net realmは誰でもセルフ登録できるため、認証済みだけでは権限を
+            // 付与しない。権限が必要なページは userinfo のロール(admin-panelのclient role)
+            // から計算した権限(state.rbac)が確認できたユーザーのみ表示し、それ以外は
+            // ダッシュボードへ戻す。表示上の判定だけで、最終的な権限はサーバー側のRBACでも
+            // 再判定する。
+            val permitted = requirePermission == null || state.rbac.hasPermission(requirePermission)
+            if (!permitted) {
                 LaunchedEffect(Unit) {
                     ctx.router.navigateTo("/")
                 }
@@ -81,7 +108,7 @@ fun AuthGuard(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    SpanText("管理者権限が必要です")
+                    SpanText("このページを表示する権限がありません")
                 }
             } else {
                 content(state, { authProvider.logoutAll() }, authProvider)

@@ -35,11 +35,12 @@ import kotlin.js.Promise
 
 /**
  * Keycloakのkigawa-netレルムでの認証を扱う。
- * issue #155で管理用realm(manage)からkigawa-netへ移行した。kigawa-net realmは
- * 誰でもセルフ登録できる(registrationAllowed=true)ため、管理者判定はuserinfoに載る
- * ロール(admin-panelクライアントの admin ロール)の有無で行い、
- * ロールが確認できない場合は非管理者(安全側)として扱う。
- * 実際のアクセス制御の境界はサーバー側(RBAC)でも併せて行う。
+ * issue #155で管理用realm(manage)からkigawa-netへ移行した。
+ * issue #183で認可はadmin-panelのclient role(viewer/operator/admin)によるRBACへ移行し、
+ * このファイルは「ロールの取得・保持」だけを担う。表示に使う判定は [rbacPermissions] で
+ * 作り、実際の権限の境界はサーバー側(Ktor APIのrequireRole)で再判定される。
+ * kigawa-net realmは誰でもセルフ登録できる(registrationAllowed=true)ため、
+ * ロールが確認できない間は権限なし(安全側)として扱う。
  *
  * issue #169でGoogle式アカウント切替えに対応し、複数ユーザーのセッションを
  * 同時保持できる。アカウントIDはuserinfoのsubを用いる。
@@ -60,38 +61,11 @@ data class UserInfoResponse(
     @SerialName("preferred_username") val preferredUsername: String? = null,
     @SerialName("email") val email: String? = null,
     @SerialName("name") val name: String? = null,
-    // ロールはKeycloakのマッパー設定により形式が揺れるため、あえて型を固定しない
+    // ロールはKeycloakのマッパー設定により形式が揺れるため、あえて型を固定しない。
+    // (realm_access は realmロールのため参照せず、client roleのみを [rbacRoles] で抜き出す)
     @SerialName("roles") val roles: JsonElement? = null,
-    @SerialName("realm_access") val realmAccess: JsonElement? = null,
     @SerialName("resource_access") val resourceAccess: JsonElement? = null
 )
-
-/**
- * userinfoのロール表現に admin が含まれるか判定する。
- * KeycloakのUser Client Roleマッパー(multivalued)はトップレベルの roles に
- * 配列("admin"等)で出る想定だが、realm_access.roles / resource_access["admin-panel"].roles
- * 形式にも対応するため、配列・オブジェクト・文字列のいずれでも受ける。
- * ロールが無い・形式が不明な場合は false(非管理者・安全側)にする。
- */
-private fun JsonElement?.containsAdminRole(): Boolean = when (this) {
-    is JsonArray -> any { it is JsonPrimitive && it.content == "admin" }
-    is JsonObject -> keys.any { it == "admin" } || values.any { it.containsAdminRole() }
-    is JsonPrimitive -> content == "admin"
-    else -> false
-}
-
-/**
- * userinfo全体から管理者(adminロール保有)を判定する。
- * kigawa-net realmは誰でもセルフ登録できるため、ロール欠落時を管理者扱いにすると
- * 全員が管理者になってしまう。必ず「ロールが確認できた場合のみ」true を返す。
- */
-private fun UserInfoResponse.hasAdminRole(): Boolean {
-    if (roles != null && roles.containsAdminRole()) return true
-    if (realmAccess != null && realmAccess.containsAdminRole()) return true
-    // resource_accessはクライアントIDごとの入れ子なので、admin-panelクライアント分のみ見る
-    val adminPanelAccess = (resourceAccess as? JsonObject)?.get("admin-panel")
-    return adminPanelAccess != null && adminPanelAccess.containsAdminRole()
-}
 
 /** アカウント切替えメニューの表示用。idはuserinfoのsub(レガシー移行直後は仮ID)。 */
 data class AccountInfo(val id: String, val username: String)
@@ -110,9 +84,13 @@ private data class StoredAccount(
     val refreshToken: String? = null,
     val idToken: String? = null,
     val expiresAt: Long = 0L,
-    // 最後に userinfo で確認できた管理者フラグ。取得できない間は false(安全側)。
-    val isAdmin: Boolean = false
+    // admin-panelのclient roles(viewer/operator/admin。issue #183)。userinfoで確認できたもの。
+    // 取得できない間は空(= 権限なし・安全側)。表示用のみで、境界はサーバー側のRBAC。
+    val roles: List<String> = emptyList()
 )
+
+/** 保存済みアカウントの有効ロール集合。 */
+private fun StoredAccount.effectiveRoles(): Set<String> = roles.toSet()
 
 object KeycloakConfig {
     val serverUrl: String = js("window.__KEYCLOAK_URL__ || 'https://user.kigawa.net'") as String
@@ -134,9 +112,17 @@ sealed class AuthState {
         val accessToken: String,
         val accountId: String,
         val accounts: List<AccountInfo> = emptyList(),
-        // userinfoのロール(admin-panelのadminロール)で判定。確認できない間は false(安全側)
-        val isAdmin: Boolean = false
-    ) : AuthState()
+        // admin-panelのclient roles(viewer/operator/admin、issue #183)。
+        // 確認できない間は空(= 権限なし・安全側)。表示制御のみに使い、
+        // 最終的な認可はサーバー側のRBAC(各routeのrequireRole)で行う。
+        val roles: Set<String> = emptySet()
+    ) {
+        /** メニュー・ボタン・ページの表示制御用の権限(セキュリティ境界ではない)。 */
+        val rbac: RbacPermissions get() = rbacPermissions(roles)
+
+        /** adminロール保有者。旧isAdminの置き換え(rolesベース、issue #183)。 */
+        val isAdmin: Boolean get() = rbac.isAdmin
+    } : AuthState()
 
     data class Error(val message: String) : AuthState()
 }
@@ -270,8 +256,8 @@ class KeycloakAuthProvider : AutoCloseable {
             // 有効な保存済みトークンがあれば、従来どおり即座に認証済みを流す
             emitActiveOrUnauthenticated()
             // localStorageにはロール情報が最新で入っていない場合があるため、
-            // userinfo から管理者フラグを最新化する(失敗時は現状維持)
-            refreshActiveAdminFlag()
+            // userinfo からロールを最新化する(失敗時は現状維持)
+            refreshActiveRoles()
             onSettled()
             return
         }
@@ -282,19 +268,19 @@ class KeycloakAuthProvider : AutoCloseable {
                 // 失敗時のみ既存の失効処理へ回す。残アカウントがあれば先頭を有効化して
                 // 継続し、なければログイン要求(エラー表示)へ落とす。
                 handleRefreshFailure()
-                // 切替先アカウントの管理者フラグは userinfo で最新化する(失敗時は現状維持)
-                refreshActiveAdminFlag()
+                // 切替先アカウントのロールは userinfo で最新化する(失敗時は現状維持)
+                refreshActiveRoles()
             }
             onSettled()
         }
     }
 
     /**
-     * 保持しているアクセストークンで userinfo を取得し、管理者フラグを最新化する。
+     * 保持しているアクセストークンで userinfo を取得し、ロールを最新化する(issue #183)。
      * 保存時点のロールが古い(権限が剥奪された等)場合に備えた補完で、
      * 取得に失敗してもログイン状態は維持し、描画クラッシュもさせない。
      */
-    private fun refreshActiveAdminFlag() {
+    private fun refreshActiveRoles() {
         scope.launch {
             try {
                 val activeId = try {
@@ -306,13 +292,13 @@ class KeycloakAuthProvider : AutoCloseable {
                 val userInfo = httpClient.get(KeycloakConfig.userInfoUrl()) {
                     bearerAuth(account.accessToken)
                 }.body<UserInfoResponse>()
-                val admin = userInfo.hasAdminRole()
+                val newRoles = userInfo.rbacRoles().sorted()
                 // 取得中に別の処理が書き換えていたら触らない
                 val latest = loadAccounts()
                 val current = latest[activeId] ?: return@launch
-                if (current.isAdmin == admin && !activeId.startsWith(LEGACY_ID_PREFIX)) return@launch
+                if (current.roles == newRoles && !activeId.startsWith(LEGACY_ID_PREFIX)) return@launch
                 latest[activeId] = current.copy(
-                    isAdmin = admin,
+                    roles = newRoles,
                     username = if (activeId.startsWith(LEGACY_ID_PREFIX)) displayNameOf(userInfo) else current.username
                 )
                 saveAccounts(latest)
@@ -425,7 +411,7 @@ class KeycloakAuthProvider : AutoCloseable {
                 accessToken = active.accessToken,
                 accountId = activeId,
                 accounts = accounts.map { (id, account) -> AccountInfo(id, account.username) },
-                isAdmin = active.isAdmin
+                roles = active.roles.toSet()
             )
         } else {
             try {
@@ -532,9 +518,9 @@ class KeycloakAuthProvider : AutoCloseable {
                 idToken = tokenResponse.idToken ?: account.idToken,
                 expiresAt = nowMillis() + tokenResponse.expiresIn * 1000L
             )
-            // リフレッシュ成功時に userinfo から管理者フラグを最新化する。
+            // リフレッシュ成功時に userinfo からロールを最新化する。
             // ロールが載らない・取得失敗の場合は保存済みの値を維持する(安全側は
-            // 「非管理者」だが、表示用フラグはサーバー側のRBACでも再判定される)。
+            // 「権限なし」だが、表示用権限はサーバー側のRBACでも再判定される)。
             // 併せてレガシー仮ID(legacy-*)の正規化も行う。
             var nextActiveId = activeId
             try {
@@ -542,7 +528,7 @@ class KeycloakAuthProvider : AutoCloseable {
                     bearerAuth(tokenResponse.accessToken)
                 }.body<UserInfoResponse>()
                 updated = updated.copy(
-                    isAdmin = userInfo.hasAdminRole(),
+                    roles = userInfo.rbacRoles().sorted(),
                     username = displayNameOf(userInfo)
                 )
                 if (activeId.startsWith(LEGACY_ID_PREFIX)) {
@@ -659,8 +645,8 @@ class KeycloakAuthProvider : AutoCloseable {
                 idToken = tokenResponse.idToken,
                 expiresAt = nowMillis() + tokenResponse.expiresIn * 1000L,
                 // kigawa-net realmは誰でもセルフ登録できるため、ロールが確認できた
-                // 場合のみ管理者とする(無い間は非管理者・安全側)
-                isAdmin = userInfo.hasAdminRole()
+                // 場合のみ権限を付与する(無い間は権限なし・安全側)
+                roles = userInfo.rbacRoles().sorted()
             )
             // 同一ユーザーのレガシー仮IDが残っていれば掃除する(別ユーザーの仮IDは残す)
             val legacyId = "$LEGACY_ID_PREFIX$displayName"

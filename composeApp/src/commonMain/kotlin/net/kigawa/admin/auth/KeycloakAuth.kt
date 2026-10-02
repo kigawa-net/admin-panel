@@ -23,10 +23,12 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Keycloakのkigawa-netレルムでの認証を扱う。
- * issue #155で管理用realm(manage)からkigawa-netへ移行した。kigawa-net realmは誰でも
- * セルフ登録できるため、管理者判定は userinfo に載るロール(admin-panelクライアントの
- * admin ロール)の有無で行い、ロールが確認できない間は非管理者(安全側)として扱う。
- * 実際のアクセス制御の境界はサーバー側(RBAC)でも併せて行う。
+ * issue #155で管理用realm(manage)からkigawa-netへ移行した。
+ * issue #183で認可はadmin-panelのclient role(viewer/operator/admin)によるRBACへ移行し、
+ * このファイルは「ロールの取得・保持」だけを担う。表示に使う判定は [rbacPermissions] で
+ * 作り、実際の権限の境界はサーバー側(Ktor APIのrequireRole)で再判定される。
+ * kigawa-net realmは誰でもセルフ登録できる(registrationAllowed=true)ため、
+ * ロールが確認できない間は権限なし(安全側)として扱う。
  */
 @Serializable
 data class TokenResponse(
@@ -43,38 +45,90 @@ data class UserInfoResponse(
     @SerialName("preferred_username") val preferredUsername: String? = null,
     @SerialName("email") val email: String? = null,
     @SerialName("name") val name: String? = null,
-    // ロールはKeycloakのマッパー設定により形式が揺れるため、あえて型を固定しない
+    // ロールはKeycloakのマッパー設定により形式が揺れるため、あえて型を固定しない。
+    // (realm_access は realmロールのため参照せず、client roleのみを [rbacRoles] で抜き出す)
     @SerialName("roles") val roles: JsonElement? = null,
-    @SerialName("realm_access") val realmAccess: JsonElement? = null,
     @SerialName("resource_access") val resourceAccess: JsonElement? = null
 )
 
 /**
- * userinfoのロール表現に admin が含まれるか判定する。
- * User Client Roleマッパー(multivalued)はトップレベルの roles に配列で出る想定だが、
- * realm_access.roles / resource_access["admin-panel"].roles 形式にも対応するため、
- * 配列・オブジェクト・文字列のいずれでも受ける。
- * ロールが無い・形式が不明な場合は false(非管理者・安全側)にする。
+ * admin-panelのKeycloak client role(issue #183)。
+ * Keycloak側ではcomposite roleで admin ⊃ operator ⊃ viewer の包含を解決済み。
  */
-private fun JsonElement?.containsAdminRole(): Boolean = when (this) {
-    is JsonArray -> any { it is JsonPrimitive && it.content == "admin" }
-    is JsonObject -> keys.any { it == "admin" } || values.any { it.containsAdminRole() }
-    is JsonPrimitive -> content == "admin"
-    else -> false
+const val ROLE_VIEWER = "viewer"
+const val ROLE_OPERATOR = "operator"
+const val ROLE_ADMIN = "admin"
+
+private val KNOWN_ROLES = setOf(ROLE_VIEWER, ROLE_OPERATOR, ROLE_ADMIN)
+
+/**
+ * メニュー・ボタン・ページの表示制御に使う権限(issue #183)。
+ *
+ * あくまでUX用でありセキュリティ境界ではない。最終的な認可は必ずサーバー側の
+ * Ktor API(各routeのrequireRole)が同じロールで判定する。
+ */
+data class RbacPermissions(
+    /** サーバー・ネットワーク・インフラ・メトリクスの閲覧(viewer) */
+    val canViewInfrastructure: Boolean,
+    /** Cordon/Drain/Pod再起動・電源操作(operator) */
+    val canOperateServers: Boolean,
+    /** ユーザー管理・組織削除など(admin) */
+    val canManageUsers: Boolean,
+    /** GitHub App token発行・CI token policy(admin) */
+    val canManageGithubApp: Boolean,
+    /** 組織の一覧(全件)表示・削除など、adminロールそのもの */
+    val isAdmin: Boolean
+)
+
+/**
+ * ロール集合から表示制御用の権限を計算する。
+ * composite roleで包含は解決済みだが、保存形式の移行直後などロールが1つだけ
+ * 入ってきてもマトリクス通りになるよう本側でも階層を展開する。
+ */
+fun rbacPermissions(roles: Set<String>): RbacPermissions {
+    val hasAdmin = ROLE_ADMIN in roles
+    val hasOperator = hasAdmin || ROLE_OPERATOR in roles
+    val hasViewer = hasOperator || ROLE_VIEWER in roles
+    return RbacPermissions(
+        canViewInfrastructure = hasViewer,
+        canOperateServers = hasOperator,
+        canManageUsers = hasAdmin,
+        canManageGithubApp = hasAdmin,
+        isAdmin = hasAdmin
+    )
+}
+
+/** [element]が既知のロール名を含む場合に取り出す(未知の値は無視する)。 */
+private fun collectKnownRoles(element: JsonElement?, into: MutableSet<String>) {
+    when (element) {
+        is JsonArray -> element.forEach { collectKnownRoles(it, into) }
+        is JsonObject -> element.forEach { (key, value) ->
+            if (key in KNOWN_ROLES) into += key else collectKnownRoles(value, into)
+        }
+        is JsonPrimitive -> if (element.content in KNOWN_ROLES) into += element.content
+        null -> Unit
+        else -> Unit
+    }
 }
 
 /**
- * userinfo全体から管理者(adminロール保有)を判定する。
- * kigawa-net realmは誰でもセルフ登録できるため、ロール欠落時を管理者扱いにすると
- * 全員が管理者になってしまう。必ず「ロールが確認できた場合のみ」true を返す。
+ * userinfo / access tokenのロール表現から admin-panel のロール集合を抜き出す。
+ *
+ * - トップレベルの `roles`: KeycloakのUser Client Roleマッパー(multivalued)が出す形式
+ * - `resource_access["admin-panel"].roles`: access token で issue が指定する形式
+ *
+ * `realm_access` は realmロールでありclient roleと名前が衝突しうるため参照しない。
+ * ロールが無い・形式が不明な場合は空集合(= 権限なし・安全側)。
  */
-private fun UserInfoResponse.hasAdminRole(): Boolean {
-    if (roles != null && roles.containsAdminRole()) return true
-    if (realmAccess != null && realmAccess.containsAdminRole()) return true
-    // resource_accessはクライアントIDごとの入れ子なので、admin-panelクライアント分のみ見る
-    val adminPanelAccess = (resourceAccess as? JsonObject)?.get("admin-panel")
-    return adminPanelAccess != null && adminPanelAccess.containsAdminRole()
+fun rolesFromClaims(roles: JsonElement?, resourceAccess: JsonElement?): Set<String> {
+    val result = mutableSetOf<String>()
+    collectKnownRoles(roles, result)
+    (resourceAccess as? JsonObject)?.get("admin-panel")?.let { collectKnownRoles(it, result) }
+    return result
 }
+
+/** userinfo応答全体から admin-panel のロール集合を抜き出す。 */
+fun UserInfoResponse.rbacRoles(): Set<String> = rolesFromClaims(roles, resourceAccess)
 
 interface KeycloakAuthConfig {
     val serverUrl: String
@@ -112,8 +166,9 @@ data class PersistedSession(
     val accessToken: String,
     val refreshToken: String?,
     val expiresAt: Long,
-    // 最後に userinfo で確認できた管理者フラグ。取得できない間は false(安全側)。
-    val isAdmin: Boolean = false
+    // 最後に userinfo で確認できた admin-panel のclient roles(viewer/operator/admin)。
+    // 取得できない間は空(= 権限なし・安全側)。表示用のみで、境界はサーバー側のRBAC。
+    val roles: List<String> = emptyList()
 )
 
 /**
@@ -179,7 +234,7 @@ class KeycloakAuthProvider(
             _authState.value = AuthState.Authenticated(
                 username = session.username,
                 accessToken = session.accessToken,
-                isAdmin = session.isAdmin
+                roles = session.roles.toSet()
             )
             scheduleAutoRefresh()
         }
@@ -233,14 +288,14 @@ class KeycloakAuthProvider(
                 }
             ).body<TokenResponse>()
 
-            // リフレッシュ成功時に userinfo から管理者フラグを最新化する。
+            // リフレッシュ成功時に userinfo からロールを最新化する。
             // 取得に失敗してもトークン更新自体は有効なので、保存済みの値を維持する。
-            val updatedAdmin = try {
+            val updatedRoles = try {
                 httpClient.get(config.userInfoUrl()) {
                     bearerAuth(tokenResponse.accessToken)
-                }.body<UserInfoResponse>().hasAdminRole()
+                }.body<UserInfoResponse>().rbacRoles().sorted()
             } catch (e: Exception) {
-                session.isAdmin
+                session.roles
             }
 
             tokenStorage.save(
@@ -249,13 +304,13 @@ class KeycloakAuthProvider(
                     accessToken = tokenResponse.accessToken,
                     refreshToken = tokenResponse.refreshToken ?: refreshToken,
                     expiresAt = currentTimeMillis() + tokenResponse.expiresIn * 1000L,
-                    isAdmin = updatedAdmin
+                    roles = updatedRoles
                 )
             )
 
             val current = _authState.value
             if (current is AuthState.Authenticated) {
-                _authState.value = current.copy(accessToken = tokenResponse.accessToken, isAdmin = updatedAdmin)
+                _authState.value = current.copy(accessToken = tokenResponse.accessToken, roles = updatedRoles.toSet())
             }
             true
         } catch (e: Exception) {
