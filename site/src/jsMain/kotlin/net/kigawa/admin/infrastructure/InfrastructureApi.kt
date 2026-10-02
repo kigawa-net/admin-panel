@@ -17,8 +17,9 @@ object InfrastructureApiConfig {
  * サーバーが4xx/5xxを返したときに投げられる例外(issue #184、組織管理の
  * OrganizationApiExceptionと同じ扱い)。メッセージにはサーバーが返した理由が
  * 入るため、そのまま画面に表示できる。
+ * statusCode も保持し、呼び出し側で 401/403/5xx を判別可能にする。
  */
-class InfrastructureApiException(message: String) : Exception(message)
+class InfrastructureApiException(message: String, val statusCode: Int) : Exception(message)
 
 /** サーバー側のエラー応答本文(`mapOf("error" to ...)`)に対応する。 */
 @Serializable
@@ -46,7 +47,7 @@ private suspend fun HttpResponse.throwIfNotSuccess(): HttpResponse {
         403 -> "インフラ構成を表示する権限がありません。"
         else -> serverMessage ?: "リクエストに失敗しました (HTTP ${status.value})"
     }
-    throw InfrastructureApiException(message)
+    throw InfrastructureApiException(message, status.value)
 }
 
 suspend fun fetchInfrastructureTopology(client: HttpClient, accessToken: String): InfrastructureTopology {
