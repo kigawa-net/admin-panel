@@ -83,3 +83,11 @@ fun rolesFromClaims(roles: JsonElement?, resourceAccess: JsonElement?): Set<Stri
 
 /** userinfo応答全体から admin-panel のロール集合を抜き出す。 */
 fun UserInfoResponse.rbacRoles(): Set<String> = rolesFromClaims(roles, resourceAccess)
+
+/** [PagePermission] を [RbacPermissions] に解決する。 */
+fun RbacPermissions.hasPermission(permission: PagePermission): Boolean = when (permission) {
+    PagePermission.VIEW_INFRASTRUCTURE -> canViewInfrastructure
+    PagePermission.OPERATE_SERVERS -> canOperateServers
+    PagePermission.MANAGE_USERS -> canManageUsers
+    PagePermission.MANAGE_GITHUB_APP -> canManageGithubApp
+}

@@ -6,7 +6,7 @@ private const val KEY_USERNAME = "username"
 private const val KEY_ACCESS_TOKEN = "access_token"
 private const val KEY_REFRESH_TOKEN = "refresh_token"
 private const val KEY_EXPIRES_AT = "expires_at"
-private const val KEY_IS_ADMIN = "is_admin"
+private const val KEY_ROLES = "roles"
 
 /**
  * Persists to the OS-native preferences backing store (Windows registry / macOS plist / a
@@ -26,7 +26,7 @@ class PreferencesTokenStorage : TokenStorage {
         }
         prefs.putLong(KEY_EXPIRES_AT, session.expiresAt)
         // 管理者フラグが無い旧保存形式は false(非管理者・安全側)で読まれる
-        prefs.putBoolean(KEY_IS_ADMIN, session.isAdmin)
+        prefs.put(KEY_ROLES, session.roles.joinToString(","))
         prefs.flush()
     }
 
@@ -35,8 +35,9 @@ class PreferencesTokenStorage : TokenStorage {
         val accessToken = prefs.get(KEY_ACCESS_TOKEN, null) ?: return null
         val refreshToken = prefs.get(KEY_REFRESH_TOKEN, null)
         val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
-        val isAdmin = prefs.getBoolean(KEY_IS_ADMIN, false)
-        return PersistedSession(username, accessToken, refreshToken, expiresAt, isAdmin)
+        val rolesStr = prefs.get(KEY_ROLES, "")
+        val roles = if (rolesStr.isEmpty()) emptyList<String>() else rolesStr.split(",")
+        return PersistedSession(username, accessToken, refreshToken, expiresAt, roles)
     }
 
     override fun clear() {

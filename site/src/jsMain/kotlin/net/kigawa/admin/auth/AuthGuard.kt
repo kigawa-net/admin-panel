@@ -41,14 +41,6 @@ enum class PagePermission {
     MANAGE_GITHUB_APP
 }
 
-/** [PagePermission] を [RbacPermissions] に解決する。 */
-private fun RbacPermissions.hasPermission(permission: PagePermission): Boolean = when (permission) {
-    PagePermission.VIEW_INFRASTRUCTURE -> canViewInfrastructure
-    PagePermission.OPERATE_SERVERS -> canOperateServers
-    PagePermission.MANAGE_USERS -> canManageUsers
-    PagePermission.MANAGE_GITHUB_APP -> canManageGithubApp
-}
-
 /**
  * Shared Keycloak auth handling for every route: shows the login screen when unauthenticated,
  * surfaces auth errors, and (when [requirePermission] is set) bounces users who lack the

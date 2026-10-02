@@ -235,7 +235,7 @@ class KeycloakAuthProvider(
                 username = session.username,
                 accessToken = session.accessToken,
                 roles = session.roles.toSet()
-            )
+            ) as AuthState
             scheduleAutoRefresh()
         }
     }
@@ -310,7 +310,7 @@ class KeycloakAuthProvider(
 
             val current = _authState.value
             if (current is AuthState.Authenticated) {
-                _authState.value = current.copy(accessToken = tokenResponse.accessToken, roles = updatedRoles.toSet())
+                _authState.value = current.copy(accessToken = tokenResponse.accessToken, roles = updatedRoles.toSet()) as AuthState
             }
             true
         } catch (e: Exception) {
@@ -371,17 +371,16 @@ class KeycloakAuthProvider(
                         accessToken = tokenResponse.accessToken,
                         refreshToken = tokenResponse.refreshToken,
                         expiresAt = currentTimeMillis() + tokenResponse.expiresIn * 1000L,
-                        // kigawa-net realmは誰でもセルフ登録できるため、ロールが確認できた
-                        // 場合のみ管理者とする(無い間は非管理者・安全側)
-                        isAdmin = userInfo.hasAdminRole()
+                        roles = userInfo.rbacRoles().sorted()
                     )
                 )
 
+                val userRoles = userInfo.rbacRoles()
                 _authState.value = AuthState.Authenticated(
                     username = displayName,
                     accessToken = tokenResponse.accessToken,
-                    isAdmin = userInfo.hasAdminRole()
-                )
+                    roles = userRoles
+                ) as AuthState
                 scheduleAutoRefresh()
             } catch (e: Exception) {
                 _authState.value = AuthState.Error(
@@ -410,8 +409,17 @@ sealed class AuthState {
     data class Authenticated(
         val username: String,
         val accessToken: String,
-        // userinfoのロール(admin-panelのadminロール)で判定。確認できない間は false(安全側)
-        val isAdmin: Boolean = false
-    ) : AuthState()
+        // admin-panelのclient roles(viewer/operator/admin、issue #183)。
+        // 確認できない間は空(= 権限なし・安全側)。表示制御のみに使い、
+        // 最終的な認可はサーバー側のRBAC(各routeのrequireRole)で行う。
+        val roles: Set<String> = emptySet()
+    ) {
+        /** メニュー・ボタン・ページの表示制御用の権限(セキュリティ境界ではない)。 */
+        val rbac: RbacPermissions get() = rbacPermissions(roles)
+
+        /** adminロール保有者。旧isAdminの置き換え(rolesベース、issue #183)。 */
+        val isAdmin: Boolean get() = rbac.isAdmin
+    }
+
     data class Error(val message: String) : AuthState()
 }

@@ -122,7 +122,7 @@ sealed class AuthState {
 
         /** adminロール保有者。旧isAdminの置き換え(rolesベース、issue #183)。 */
         val isAdmin: Boolean get() = rbac.isAdmin
-    } : AuthState()
+    }
 
     data class Error(val message: String) : AuthState()
 }
@@ -412,7 +412,7 @@ class KeycloakAuthProvider : AutoCloseable {
                 accountId = activeId,
                 accounts = accounts.map { (id, account) -> AccountInfo(id, account.username) },
                 roles = active.roles.toSet()
-            )
+            ) as AuthState
         } else {
             try {
                 localStorage.removeItem(KEY_ACTIVE_ACCOUNT)

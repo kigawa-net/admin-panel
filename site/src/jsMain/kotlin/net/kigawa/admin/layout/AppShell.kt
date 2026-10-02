@@ -31,6 +31,7 @@ import net.kigawa.admin.auth.AuthState
 import net.kigawa.admin.auth.KeycloakAuthProvider
 import net.kigawa.admin.auth.PagePermission
 import net.kigawa.admin.auth.RbacPermissions
+import net.kigawa.admin.auth.hasPermission
 import net.kigawa.admin.organizations.Organization
 import net.kigawa.admin.organizations.fetchMyOrganizations
 import org.jetbrains.compose.web.css.Color
