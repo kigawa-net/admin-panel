@@ -38,16 +38,17 @@ spec:
             # 認証・管理者ロール判定に使うuserinfoエンドポイント(issue #155で管理用realm
             # (manage)からkigawa-netへ移行)。kigawa-net realmは誰でもセルフ登録できる
             # ため、adminロールの有無で管理者を判定する。
+            # #183のインフラ課題回避のため、内部ClusterIP経由でアクセスする。
             - name: KEYCLOAK_ADMIN_USERINFO_URL
-              value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
+              value: "https://keycloak-service.keycloak.svc.cluster.local:8443/realms/kigawa-net/protocol/openid-connect/userinfo"
             # RBAC認証(issue #183)でアクセストークンを検証するためのJWKS(certs)とissuer。
             # 検証内容は signature(JWKS)・iss・exp・aud(admin-panel)で、認可は
             # client role(viewer/operator/admin)で判定する。いずれも秘密情報ではない。
-            # 未指定でもコード内の既定値(kigawa-net realm)と同じになる。
+            # #183のインフラ課題回避のため、内部ClusterIP経由でアクセスする。
             - name: KEYCLOAK_JWKS_URL
-              value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/certs"
+              value: "https://keycloak-service.keycloak.svc.cluster.local:8443/realms/kigawa-net/protocol/openid-connect/certs"
             - name: KEYCLOAK_ISSUER
-              value: "https://user.kigawa.net/realms/kigawa-net"
+              value: "https://keycloak-service.keycloak.svc.cluster.local:8443/realms/kigawa-net"
             # 緊急回避用(既定はtrue=厳格)。falseにすると「ログイン済み=全許可(=admin扱い)」の
             # 旧来どおりの挙動にフォールバックする。Keycloak側(client role/audience mapper)の
             # 適用前にAPIだけを出したい場合にのみ一時的に設定する。
