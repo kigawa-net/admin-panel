@@ -46,6 +46,9 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import net.kigawa.admin.server.mcp.McpRequest
+import net.kigawa.admin.server.mcp.McpResponse
+import net.kigawa.admin.server.mcp.McpServerInstance
 
 /** Internal cluster DNS for the kube-prometheus-stack Prometheus service (see kigawa01/k8s-system). */
 internal val prometheusUrl =
@@ -180,6 +183,9 @@ fun Application.module() {
         initDatabaseSchema()
         runBlocking { seedCiTokenPolicyIfEmpty() }
     }
+
+    // MCP Serverのツール登録(issue #200)
+    net.kigawa.admin.server.mcp.McpServerInstance.initialize()
 
     routing {
         get("/health") {
@@ -1032,6 +1038,16 @@ fun Application.module() {
                     call.respond(HttpStatusCode.NotFound, mapOf("error" to "not found"))
                 }
             }
+        }
+
+        // MCP endpoint (issue #200): Streamable HTTP transport for MCP
+        // Requires authentication with viewer role or higher
+        post("/mcp") {
+            val principal = requireRole(AdminRole.VIEWER) ?: return@post
+            val mcpServer = net.kigawa.admin.server.mcp.McpServerInstance.getInstance()
+            val requestBody = call.receive<McpRequest>()
+            val response = mcpServer.handleCall(call, principal, requestBody)
+            call.respond(response)
         }
     }
 }
