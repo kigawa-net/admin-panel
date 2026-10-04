@@ -38,10 +38,17 @@ jobs:
 
       - name: Export kobweb site
         working-directory: site
-        run: gradle kobwebExport -PkobwebExportLayout=STATIC --no-daemon
+        run: gradle kobwebExport -PkobwebExportLayout=STATIC -PkobwebBuildTarget=RELEASE --no-daemon
 
       - name: Copy kobweb output for Docker
         run: cp -r site/.kobweb/site dist
+
+      - name: Verify production export has no DEBUG live-reload code
+        run: |
+          if grep -R -q 'kobweb-status' site/.kobweb/site; then
+            echo 'ERROR: DEBUG Kobweb live-reload code found in production export'
+            exit 1
+          fi
 
       - name: Build server distribution
         run: gradle :server:installDist --no-daemon
