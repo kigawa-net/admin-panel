@@ -81,3 +81,73 @@ git push → main
 - **Kotlin 2.2.20 必須**: Kobweb 0.23.3 が KSP `2.2.20-2.0.2` に依存するため、バージョンを変更すると `Internal compiler error` が発生する
 - **`group = "net.kigawa.admin"` 必須**: Kobweb KSP が `@Page` アノテーションをスキャンする際にプロジェクトグループを使用するため、未設定だとページが見つからない
 - **`moduleName = "admin"` 必須**: 未設定だと空文字列になり `IllegalArgumentException` が発生する
+
+## MCP Server としての利用
+
+admin-panel は MCP (Model Context Protocol) server としても利用可能です。Claude Code 等のMCPクライアントから、サーバー・Kubernetes・ネットワーク・組織等の状態確認と、権限に応じた運用操作を行えます。
+
+### エンドポイント
+
+- **URL**: `https://admin.kigawa.net/mcp`
+- **Transport**: Streamable HTTP (POST `/mcp`)
+- **認証**: Keycloak (kigawa-net realm) の Bearer access token
+
+### Claude Code への登録例
+
+```bash
+claude mcp add \
+  --transport http \
+  --url https://admin.kigawa.net/mcp \
+  --header "Authorization: Bearer <YOUR_KEYCLOAK_TOKEN>" \
+  admin-panel
+```
+
+または `claude_desktop_config.json` / `~/.claude/claude_code_config.json` に記述：
+
+```json
+{
+  "mcpServers": {
+    "admin-panel": {
+      "transport": "http",
+      "url": "https://admin.kigawa.net/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_KEYCLOAK_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+### 権限ロール
+
+| Role | 説明 |
+|------|------|
+| `viewer` | サーバー・ネットワーク・インフラ・メトリクスの閲覧 |
+| `operator` | viewer + Kubernetes/サーバー運用操作 |
+| `admin` | operator + ユーザー・組織・GitHub App管理 |
+
+### 利用可能な主なツール
+
+**viewer**:
+- `dashboard.get`, `dashboard.getTraffic`
+- `network.topology.get`
+- `servers.list`
+- `infrastructure.get`, `infrastructure.resourceUsage.get`
+- `organizations.mine`
+
+**operator**:
+- `servers.cordon`, `servers.uncordon`, `servers.drain`
+- `servers.reboot`, `servers.shutdown`
+- `pods.restart`
+
+**admin**:
+- `users.list/create/enable/disable/resetPassword/delete`
+- `organizations.list/create/delete`
+- `github_app.installations.list`
+- `list_ci_policies`, `put_ci_policy`, `delete_ci_policy`
+
+### 注意事項
+
+- 事前に kigawa-net realm へログインし、`admin-panel` クライアントの適切なロール（viewer/operator/admin）が付与されたユーザーの Bearer token を使用してください
+- token は有効期限内のものを使用してください（期限切れの場合は 401 となります）
+- RBAC が有効な現行環境では、`KEYCLOAK_RBAC_ENFORCED=false` によるフォールバックは推奨されません
