@@ -156,6 +156,60 @@ private const val INIT_REFRESH_MARGIN_MS = 60_000L
 
 private fun nowMillis(): Long = (js("Date.now()") as Double).toLong()
 
+/**
+ * JWT payload をデコードして Map で返す。
+ * デコードできない場合は null を返す。
+ */
+private fun decodeJwtPayload(jwt: String): Map<String, Any?>? {
+    return try {
+        val parts = jwt.split('.')
+        if (parts.size < 2) return null
+        val payload = parts[1]
+        val base64 = payload.replace('-', '+').replace('_', '/')
+        val json = js("atob")(base64) as String
+        accountsJson.decodeFromString<Map<String, JsonElement>>(json).mapValues { (_, v) ->
+            when (v) {
+                is JsonPrimitive -> v.content
+                is JsonArray -> v.map { (it as? JsonPrimitive)?.content }
+                else -> v.toString()
+            }
+        }
+    } catch (e: Throwable) {
+        null
+    }
+}
+
+/**
+ * 保存済みアカウントが現在の認証設定と整合しているか検証する。
+ * 不整合の場合は false を返し、呼び出し側で削除する。
+ */
+private fun StoredAccount.isValidForCurrentConfig(): Boolean {
+    val payload = decodeJwtPayload(accessToken) ?: return false
+    val iss = payload["iss"] as? String ?: return false
+    val azp = payload["azp"] as? String ?: return false
+    val aud = payload["aud"]
+    val exp = payload["exp"]
+    // exp が 数値(秒) または文字列数字 の場合に対応
+    val expSeconds = when (exp) {
+        is Number -> exp.toLong()
+        is String -> exp.toLongOrNull()
+        else -> null
+    } ?: return false
+
+    if (iss != "https://user.kigawa.net/realms/${KeycloakConfig.realm}") return false
+    if (azp != KeycloakConfig.clientId) return false
+    val audValid = when (aud) {
+        is String -> aud == KeycloakConfig.clientId
+        is List<*> -> aud.any { it == KeycloakConfig.clientId }
+        else -> false
+    }
+    if (!audValid) return false
+
+    val expiresAtMs = expSeconds * 1000L
+    if (expiresAtMs <= nowMillis()) return false
+    return true
+}
+
 private val accountsJson = Json {
     ignoreUnknownKeys = true
     isLenient = true
@@ -218,6 +272,27 @@ class KeycloakAuthProvider : AutoCloseable {
             _authState.value = AuthState.Unauthenticated
             return
         }
+
+        // issue #204: 保存済みセッションを検証し、旧realm/期限切れのものを除外する。
+        val validAccounts = mutableMapOf<String, StoredAccount>()
+        for ((id, account) in accounts) {
+            if (account.isValidForCurrentConfig()) {
+                validAccounts[id] = account
+            } else {
+                // 不正なアカウントをlocalStorageから削除する
+                val latest = loadAccounts()
+                latest.remove(id)
+                saveAccounts(latest)
+            }
+        }
+
+        if (validAccounts.isEmpty()) {
+            _authState.value = AuthState.Unauthenticated
+            return
+        }
+
+        // 有効なアカウントがあれば、それを最新のloadAccountsに反映してから処理を続ける
+        saveAccounts(validAccounts)
         emitActiveAccountOrRefresh {
             // 自動更新は初回リフレッシュの完了後に始める。先に走らせると
             // 期限前の自動リフレッシュと二重リクエストになる(issue #184)。
