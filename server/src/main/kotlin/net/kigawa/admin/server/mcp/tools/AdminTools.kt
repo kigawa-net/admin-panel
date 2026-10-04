@@ -404,4 +404,148 @@ fun McpServer.registerAdminTools() {
             )
         }
     ))
+
+    registerTool(McpTool(
+        name = "list_ci_policies",
+        description = "List all CI token policies",
+        inputSchema = buildJsonObject {
+            put("type", "object")
+            put("properties", buildJsonObject { })
+        },
+        requiredRole = AdminRole.ADMIN,
+        handler = { context, _ ->
+            try {
+                val policies = kotlinx.coroutines.runBlocking {
+                    net.kigawa.admin.server.listCiTokenPolicies()
+                }
+                val json = buildJsonObject {
+                    put("type", "text")
+                    put("text", policies.joinToString("\n") { "${it.callerRepository}: ${it.allowedOwner}" })
+                }
+                CallToolResult(
+                    content = listOf(ToolContent.Text(text = json.toString())),
+                    isError = false
+                )
+            } catch (e: Exception) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(text = "Error listing CI policies: ${e.message}")),
+                    isError = true
+                )
+            }
+        }
+    ))
+
+    registerTool(McpTool(
+        name = "put_ci_policy",
+        description = "Create or update a CI token policy",
+        inputSchema = buildJsonObject {
+            put("type", "object")
+            put("properties", buildJsonObject {
+                put("callerRepository", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Caller repository (e.g. OneServerMC/RpgCore)")
+                })
+                put("allowedOwner", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Allowed owner")
+                })
+                put("allowedRepositories", buildJsonObject {
+                    put("type", "array")
+                    put("items", buildJsonObject { put("type", "string") })
+                    put("description", "Allowed repositories")
+                })
+                put("allowedPermissions", buildJsonObject {
+                    put("type", "object")
+                    put("description", "Allowed permissions")
+                })
+            })
+            putJsonArray("required") {
+                add(JsonPrimitive("callerRepository"))
+                add(JsonPrimitive("allowedOwner"))
+                add(JsonPrimitive("allowedRepositories"))
+                add(JsonPrimitive("allowedPermissions"))
+            }
+        },
+        requiredRole = AdminRole.ADMIN,
+        handler = { context, args ->
+            try {
+                val callerRepository = args?.get("callerRepository")?.stringValue ?: ""
+                val allowedOwner = args?.get("allowedOwner")?.stringValue ?: ""
+                val allowedRepositories = args?.get("allowedRepositories")?.let { element ->
+                    (element as? kotlinx.serialization.json.JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content } ?: emptyList()
+                } ?: emptyList()
+                val allowedPermissions = args?.get("allowedPermissions")?.let { element ->
+                    (element as? kotlinx.serialization.json.JsonObject)?.mapValues { (it.value as? JsonPrimitive)?.content ?: "" } ?: emptyMap()
+                } ?: emptyMap()
+
+                if (callerRepository.isBlank() || allowedOwner.isBlank()) {
+                    CallToolResult(
+                        content = listOf(ToolContent.Text(text = "callerRepository and allowedOwner are required")),
+                        isError = true
+                    )
+                } else {
+                    val entry = net.kigawa.admin.server.CiTokenPolicyEntryDto(
+                        callerRepository = callerRepository,
+                        allowedOwner = allowedOwner,
+                        allowedRepositories = allowedRepositories,
+                        allowedPermissions = allowedPermissions
+                    )
+                    kotlinx.coroutines.runBlocking {
+                        net.kigawa.admin.server.upsertCiTokenPolicy(entry)
+                    }
+                    CallToolResult(
+                        content = listOf(ToolContent.Text(text = "CI token policy updated for $callerRepository")),
+                        isError = false
+                    )
+                }
+            } catch (e: Exception) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(text = "Error updating CI policy: ${e.message}")),
+                    isError = true
+                )
+            }
+        }
+    ))
+
+    registerTool(McpTool(
+        name = "delete_ci_policy",
+        description = "Delete a CI token policy",
+        inputSchema = buildJsonObject {
+            put("type", "object")
+            put("properties", buildJsonObject {
+                put("callerRepository", buildJsonObject {
+                    put("type", "string")
+                    put("description", "Caller repository to delete")
+                })
+            })
+            putJsonArray("required") {
+                add(JsonPrimitive("callerRepository"))
+            }
+        },
+        requiredRole = AdminRole.ADMIN,
+        handler = { context, args ->
+            try {
+                val callerRepository = args?.get("callerRepository")?.stringValue ?: ""
+                if (callerRepository.isBlank()) {
+                    CallToolResult(
+                        content = listOf(ToolContent.Text(text = "callerRepository is required")),
+                        isError = true
+                    )
+                } else {
+                    val deleted = kotlinx.coroutines.runBlocking {
+                        net.kigawa.admin.server.deleteCiTokenPolicy(callerRepository)
+                    }
+                    CallToolResult(
+                        content = listOf(ToolContent.Text(text = if (deleted) "CI token policy deleted for $callerRepository" else "No such policy: $callerRepository")),
+                        isError = false
+                    )
+                }
+            } catch (e: Exception) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(text = "Error deleting CI policy: ${e.message}")),
+                    isError = true
+                )
+            }
+        }
+    ))
 }
