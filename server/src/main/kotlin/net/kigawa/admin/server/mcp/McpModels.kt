@@ -67,7 +67,7 @@ data class ClientInfo(
 
 @Serializable
 data class InitializeResult(
-    val protocolVersion: String = "2024-11-05",
+    val protocolVersion: String = "2025-06-18",
     val capabilities: ServerCapabilities,
     val serverInfo: ServerInfo
 )

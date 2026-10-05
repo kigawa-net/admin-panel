@@ -274,6 +274,37 @@ fun AuthenticationConfig.keycloakJwt(
     }
 }
 
+/**
+ * MCP専用JWT検証(audience=https://admin.kigawa.net/mcp)。
+ * REST API(`aud=admin-panel`)とは分離し、別の認証エンドポイントで使用する。
+ */
+fun AuthenticationConfig.mcpJwt(
+    rbac: RbacConfig,
+    jwkProvider: JwkProvider = RefreshingJwkProvider(rbac.jwksUrl)
+) {
+    jwt("mcp") {
+        realm = "admin-panel-mcp"
+        verifier(jwkProvider, rbac.issuer) {
+            withAudience("https://admin.kigawa.net/mcp")
+        }
+        validate { credential ->
+            val sub = credential.subject
+            if (sub.isNullOrBlank()) {
+                return@validate null
+            }
+            val azp = rbac.azp
+            if (azp != null && credential["azp"] != azp) {
+                return@validate null
+            }
+            AdminPrincipal(sub, rolesFor(credential, rbac))
+        }
+        challenge { _, _ ->
+            call.response.headers.append("WWW-Authenticate", "Bearer resource_metadata=\"https://admin.kigawa.net/.well-known/oauth-protected-resource\"")
+            call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+        }
+    }
+}
+
 /** トークンのロールから [AdminPrincipal] 用のロール集合を作る。 */
 private fun rolesFor(credential: JWTCredential, rbac: RbacConfig): Set<AdminRole> {
     if (!rbac.rbacEnforced) {

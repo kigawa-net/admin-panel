@@ -16,6 +16,7 @@ import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.auth.Authentication
 import io.ktor.server.auth.authenticate
+import net.kigawa.admin.server.mcpJwt
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
@@ -171,6 +172,7 @@ fun Application.module() {
     val jwksProvider = RefreshingJwkProvider(rbacConfig.jwksUrl)
     install(Authentication) {
         keycloakJwt(rbacConfig, jwksProvider)
+        mcpJwt(rbacConfig, jwksProvider)
     }
 
     // issue #183: 起動時にロール判定が可能か(JWKS到達・aud要件)をログに残す。
@@ -1042,12 +1044,25 @@ fun Application.module() {
 
         // MCP endpoint (issue #200): Streamable HTTP transport for MCP
         // Requires authentication with viewer role or higher
-        post("/mcp") {
-            val principal = requireRole(AdminRole.VIEWER) ?: return@post
-            val mcpServer = net.kigawa.admin.server.mcp.McpServerInstance.getInstance()
-            val requestBody = call.receive<McpRequest>()
-            val response = mcpServer.handleCall(call, principal, requestBody)
-            call.respond(response)
+        authenticate("mcp") {
+            post("/mcp") {
+                val principal = requireRole(AdminRole.VIEWER) ?: return@post
+                val mcpServer = net.kigawa.admin.server.mcp.McpServerInstance.getInstance()
+                val requestBody = call.receive<McpRequest>()
+                val response = mcpServer.handleCall(call, principal, requestBody)
+                call.respond(response)
+            }
+        }
+
+        // OAuth 2.0 Protected Resource Metadata (RFC 9728)
+        // MCPクライアントが認可サーバーを発見するために使用
+        get("/.well-known/oauth-protected-resource") {
+            call.respond(mapOf(
+                "resource" to "https://admin.kigawa.net/mcp",
+                "authorization_servers" to listOf("https://user.kigawa.net/realms/kigawa-net"),
+                "scopes_supported" to listOf("openid", "profile", "email", "mcp:admin-panel"),
+                "bearer_methods_supported" to listOf("header")
+            ))
         }
     }
 }
