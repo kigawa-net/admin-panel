@@ -124,6 +124,19 @@ data class GroupedSeries(
     @SerialName("memCapacityGiB") val memCapacityGiB: Double? = null
 )
 
+/**
+ * OAuth 2.0 Protected Resource Metadata (RFC 9728)のレスポンス。
+ * MCPクライアントが `/.well-known/oauth-protected-resource` を叩いて
+ * 認可サーバー(Keycloak)を発見するために使う。フィールド名はRFCどおりsnake_case。
+ */
+@Serializable
+data class ProtectedResourceMetadata(
+    @SerialName("resource") val resource: String,
+    @SerialName("authorization_servers") val authorizationServers: List<String> = emptyList(),
+    @SerialName("scopes_supported") val scopesSupported: List<String> = emptyList(),
+    @SerialName("bearer_methods_supported") val bearerMethodsSupported: List<String> = emptyList(),
+)
+
 @Serializable
 private data class PrometheusQueryRangeResponse(
     val status: String? = null,
@@ -1056,13 +1069,18 @@ fun Application.module() {
 
         // OAuth 2.0 Protected Resource Metadata (RFC 9728)
         // MCPクライアントが認可サーバーを発見するために使用
+        //
+        // Mapではなく専用のデータクラスで返す。MapだとString/Listが混在した
+        // 要素の型推定ができず、kotlinx.serializationが500を吐く(実機で確認済み)。
         get("/.well-known/oauth-protected-resource") {
-            call.respond(mapOf(
-                "resource" to "https://admin.kigawa.net/mcp",
-                "authorization_servers" to listOf("https://user.kigawa.net/realms/kigawa-net"),
-                "scopes_supported" to listOf("openid", "profile", "email", "mcp:admin-panel"),
-                "bearer_methods_supported" to listOf("header")
-            ))
+            call.respond(
+                ProtectedResourceMetadata(
+                    resource = "https://admin.kigawa.net/mcp",
+                    authorizationServers = listOf("https://user.kigawa.net/realms/kigawa-net"),
+                    scopesSupported = listOf("openid", "profile", "email", "mcp:admin-panel"),
+                    bearerMethodsSupported = listOf("header"),
+                )
+            )
         }
     }
 }
