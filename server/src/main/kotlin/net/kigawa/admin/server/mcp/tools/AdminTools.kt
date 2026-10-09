@@ -418,12 +418,12 @@ fun McpServer.registerAdminTools() {
                 val policies = kotlinx.coroutines.runBlocking {
                     net.kigawa.admin.server.listCiTokenPolicies()
                 }
-                val json = buildJsonObject {
-                    put("type", "text")
-                    put("text", policies.joinToString("\n") { "${it.callerRepository}: ${it.allowedOwner}" })
-                }
+                // ToolContent.Text に生のテキストを入れる。以前はここでも
+                // {"type":"text",...} を自前で組んでいたため、
+                // シリアライザ側の型判定と重なり二重エンコードになっていた。
+                val text = policies.joinToString("\n") { "${it.callerRepository}: ${it.allowedOwner}" }
                 CallToolResult(
-                    content = listOf(ToolContent.Text(text = json.toString())),
+                    content = listOf(ToolContent.Text(text = text)),
                     isError = false
                 )
             } catch (e: Exception) {
