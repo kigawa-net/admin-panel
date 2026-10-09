@@ -38,17 +38,24 @@ spec:
             # 認証・管理者ロール判定に使うuserinfoエンドポイント(issue #155で管理用realm
             # (manage)からkigawa-netへ移行)。kigawa-net realmは誰でもセルフ登録できる
             # ため、adminロールの有無で管理者を判定する。
-            # #183のインフラ課題回避のため、内部ClusterIP経由でアクセスする。
+            # #183のインフラ課題(#193)対応中は内部ClusterIP経由にしていたが、
+            # そちらはKeycloakのサーバー証明書に
+            # keycloak-service.keycloak.svc.cluster.local のSANが無くTLS検証で失敗する
+            # ことに加え、issuerもトークンのiss(https://user.kigawa.net/...)と
+            # 不一致になり検証が通らない。#193の経路解消後に外部URLへ戻している。
             - name: KEYCLOAK_ADMIN_USERINFO_URL
-              value: "https://keycloak-service.keycloak.svc.cluster.local:8443/realms/kigawa-net/protocol/openid-connect/userinfo"
+              value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/userinfo"
             # RBAC認証(issue #183)でアクセストークンを検証するためのJWKS(certs)とissuer。
             # 検証内容は signature(JWKS)・iss・exp・aud(admin-panel)で、認可は
             # client role(viewer/operator/admin)で判定する。いずれも秘密情報ではない。
-            # #183のインフラ課題回避のため、内部ClusterIP経由でアクセスする。
+            # #183のインフラ課題(#193)対応中は内部ClusterIP経由にしていたが、
+            # 内部DNS名は証明書のSANに無くTLS検証で失敗する(実機で確認)。
+            # 加えてissuerはトークンのiss(https://user.kigawa.net/realms/kigawa-net)と
+            # 一致しないと検証が通らないため、外部URLへ戻している(#193の経路解消済み)。
             - name: KEYCLOAK_JWKS_URL
-              value: "https://keycloak-service.keycloak.svc.cluster.local:8443/realms/kigawa-net/protocol/openid-connect/certs"
+              value: "https://user.kigawa.net/realms/kigawa-net/protocol/openid-connect/certs"
             - name: KEYCLOAK_ISSUER
-              value: "https://keycloak-service.keycloak.svc.cluster.local:8443/realms/kigawa-net"
+              value: "https://user.kigawa.net/realms/kigawa-net"
             # 緊急回避用(既定はtrue=厳格)。falseにすると「ログイン済み=全許可(=admin扱い)」の
             # 旧来どおりの挙動にフォールバックする。Keycloak側(client role/audience mapper)の
             # 適用前にAPIだけを出したい場合にのみ一時的に設定する。
