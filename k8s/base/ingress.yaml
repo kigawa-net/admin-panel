@@ -15,6 +15,22 @@ spec:
                 name: admin-panel-api
                 port:
                   number: 8080
+          # MCPエンドポイントとOAuthメタデータはAPIサーバーへ直接ルーティングする。
+          # / に任せるとフロント(nginx)が受け取り 405 を返すため分離している。
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-panel-api
+                port:
+                  number: 8080
+          - path: /.well-known
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-panel-api
+                port:
+                  number: 8080
           - path: /
             pathType: Prefix
             backend:
