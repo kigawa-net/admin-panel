@@ -16,7 +16,13 @@ import net.kigawa.admin.server.AdminRole
 class McpServer {
     private val tools = mutableMapOf<String, McpTool>()
     private val logger = org.slf4j.LoggerFactory.getLogger(McpServer::class.java)
-    private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+    private val json = kotlinx.serialization.json.Json {
+        ignoreUnknownKeys = true
+        // initialize の protocolVersion / serverInfo などの既定値を省略しない。
+        // encodeDefaults=false(既定)だと initialize の応答から欠け、クライアントが
+        // プロトコルバージョンを受け取れなくなる(実機 E2E で確認済み)。
+        encodeDefaults = true
+    }
 
     fun registerTool(tool: McpTool) {
         if (tools.containsKey(tool.name)) {
@@ -37,6 +43,20 @@ class McpServer {
                 inputSchema = it.inputSchema
             ) }
     }
+
+    /**
+     * principal が見せてよいツール一覧。AdminPrincipal.roles は adminRolesFrom で
+     * 包含関係(admin ⊃ operator ⊃ viewer)が展開済みなので、
+     * そのまま contains で判定できる。
+     */
+    private fun visibleTools(principal: AdminPrincipal): List<Tool> =
+        tools.values
+            .filter { principal.hasRole(it.requiredRole) }
+            .map { Tool(
+                name = it.name,
+                description = it.description,
+                inputSchema = it.inputSchema
+            ) }
 
     private fun getRolesForRole(role: AdminRole): Set<AdminRole> {
         return when (role) {
@@ -101,8 +121,9 @@ class McpServer {
         request: McpRequest,
         principal: AdminPrincipal
     ): McpResponse {
-        val tools = getToolsForRole(principal.roles.firstOrNull() ?: AdminRole.VIEWER)
-        val result = ListToolsResult(tools = tools)
+        // 役職の集合全体で可視ツールを絞る(以前は roles.firstOrNull() で
+        // 1つだけ見ており、集合の走査順に結果が依存していた)。
+        val result = ListToolsResult(tools = visibleTools(principal))
         return McpResponse(id = request.id, result = json.encodeToJsonElement(ListToolsResult.serializer(), result))
     }
 
@@ -120,6 +141,22 @@ class McpServer {
                 error = McpError(
                     code = McpErrorCodes.INVALID_TOOL,
                     message = "Tool not found: $toolName"
+                )
+            )
+        }
+
+        // tools/call 側にも権限判定を入れる。無いと viewer でも ADMIN 専用ツール
+        // (users.list など)を直接呼べてしまう(実機 E2E で確認済み)。
+        if (!context.principal.hasRole(tool.requiredRole)) {
+            logger.warn(
+                "MCP permission denied: user={} tool={} required={} actual={}",
+                context.principal.userId, tool.name, tool.requiredRole, context.principal.roles
+            )
+            return McpResponse(
+                id = request.id,
+                error = McpError(
+                    code = McpErrorCodes.PERMISSION_DENIED,
+                    message = "Permission denied: ${tool.name} requires ${tool.requiredRole}"
                 )
             )
         }

@@ -1,6 +1,7 @@
 package net.kigawa.admin.server.mcp
 
 import kotlinx.serialization.Contextual
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -136,22 +137,24 @@ data class CallToolResult(
 
 /** Tool content types (text, image, audio, etc.) */
 @Serializable
-@kotlinx.serialization.Polymorphic
 sealed class ToolContent {
+    // MCP の content は {"type": "text", "text": "..."} の形が必須。
+    // @SerialName を付けないと型名(net.kigawa...ToolContent.Text)が
+    // discriminator として出てクライアントが解釈できない(実機で確認済み)。
     @Serializable
-    @kotlinx.serialization.Polymorphic
+    @SerialName("text")
     data class Text(val text: String) : ToolContent()
-    
+
     @Serializable
-    @kotlinx.serialization.Polymorphic
+    @SerialName("image")
     data class Image(val data: String, val mimeType: String) : ToolContent()
-    
+
     @Serializable
-    @kotlinx.serialization.Polymorphic
+    @SerialName("audio")
     data class Audio(val data: String, val mimeType: String) : ToolContent()
-    
+
     @Serializable
-    @kotlinx.serialization.Polymorphic
+    @SerialName("resource")
     data class Resource(val resource: ResourceReference) : ToolContent()
 }
 
