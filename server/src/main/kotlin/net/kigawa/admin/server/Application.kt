@@ -162,7 +162,13 @@ fun main() {
 
 fun Application.module() {
     install(ContentNegotiation) {
-        json(Json { ignoreUnknownKeys = true })
+        // MCP の JSON-RPC モデルは id/result を @Contextual Any? で受けている。
+        // SerializersModule に Any のシリアライザを登録しないとリクエストの
+        // デシリアライズに失敗し、Ktor が空ボディの 400 を返す(実機で確認済み)。
+        json(Json {
+            ignoreUnknownKeys = true
+            serializersModule = net.kigawa.admin.server.mcp.mcpSerializersModule
+        })
     }
 
     val httpClient = HttpClient(CIO) {
