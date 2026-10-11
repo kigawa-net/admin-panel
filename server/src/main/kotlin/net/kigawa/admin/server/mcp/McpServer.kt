@@ -78,7 +78,7 @@ class McpServer {
 
         return try {
             when (request.method) {
-                McpMethods.INITIALIZE -> handleInitialize(request)
+                McpMethods.INITIALIZE -> handleInitialize(request, principal)
                 McpMethods.TOOLS_LIST -> handleToolsList(request, principal)
                 McpMethods.TOOLS_CALL -> handleToolsCall(context, request)
                 McpMethods.PING -> McpResponse(
@@ -108,7 +108,10 @@ class McpServer {
         }
     }
 
-    private suspend fun handleInitialize(request: McpRequest): McpResponse {
+    private suspend fun handleInitialize(
+        request: McpRequest,
+        principal: AdminPrincipal?
+    ): McpResponse {
         val params = request.params?.let { json.decodeFromJsonElement(InitializeParams.serializer(), it) }
         val result = InitializeResult(
             capabilities = ServerCapabilities(
@@ -119,7 +122,7 @@ class McpServer {
         
         // Audit log the initialize request
         auditLog(
-            principal = null,
+            principal = principal,
             operation = "mcp.initialize",
             target = "initialize",
             result = "success",
