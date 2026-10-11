@@ -12,6 +12,7 @@ import net.kigawa.admin.server.mcp.McpServer
 import net.kigawa.admin.server.mcp.McpTool
 import net.kigawa.admin.server.mcp.ToolContent
 import net.kigawa.admin.server.mcp.stringValue
+import net.kigawa.admin.server.mcp.boolValue
 
 /**
  * Registers all MCP tools for operator role
@@ -27,6 +28,10 @@ fun McpServer.registerOperatorTools() {
                     put("type", "string")
                     put("description", "Name of the node to cordon")
                 })
+                put("confirm", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Set to true to confirm this destructive operation")
+                })
             })
             putJsonArray("required") {
                 add(JsonPrimitive("nodeName"))
@@ -35,12 +40,22 @@ fun McpServer.registerOperatorTools() {
         requiredRole = AdminRole.OPERATOR,
         handler = { context, args ->
             val nodeName = args?.get("nodeName")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Node $nodeName cordoned successfully"
-                )),
-                isError = false
-            )
+            val confirm = args?.get("confirm")?.boolValue ?: false
+            if (!confirm) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Cordon not confirmed. Set confirm=true to proceed."
+                    )),
+                    isError = true
+                )
+            } else {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Node $nodeName cordoned successfully"
+                    )),
+                    isError = false
+                )
+            }
         }
     ))
 
@@ -54,6 +69,10 @@ fun McpServer.registerOperatorTools() {
                     put("type", "string")
                     put("description", "Name of the node to uncordon")
                 })
+                put("confirm", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Set to true to confirm this operation")
+                })
             })
             putJsonArray("required") {
                 add(JsonPrimitive("nodeName"))
@@ -62,12 +81,22 @@ fun McpServer.registerOperatorTools() {
         requiredRole = AdminRole.OPERATOR,
         handler = { context, args ->
             val nodeName = args?.get("nodeName")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Node $nodeName uncordoned successfully"
-                )),
-                isError = false
-            )
+            val confirm = args?.get("confirm")?.boolValue ?: false
+            if (!confirm) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Uncordon not confirmed. Set confirm=true to proceed."
+                    )),
+                    isError = true
+                )
+            } else {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Node $nodeName uncordoned successfully"
+                    )),
+                    isError = false
+                )
+            }
         }
     ))
 
@@ -91,6 +120,10 @@ fun McpServer.registerOperatorTools() {
                     put("description", "Ignore DaemonSet pods")
                     put("default", true)
                 })
+                put("confirm", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Set to true to confirm this destructive operation")
+                })
             })
             putJsonArray("required") {
                 add(JsonPrimitive("nodeName"))
@@ -99,12 +132,22 @@ fun McpServer.registerOperatorTools() {
         requiredRole = AdminRole.OPERATOR,
         handler = { context, args ->
             val nodeName = args?.get("nodeName")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Node $nodeName drain initiated"
-                )),
-                isError = false
-            )
+            val confirm = args?.get("confirm")?.boolValue ?: false
+            if (!confirm) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Drain not confirmed. Set confirm=true to proceed."
+                    )),
+                    isError = true
+                )
+            } else {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Node $nodeName drain initiated"
+                    )),
+                    isError = false
+                )
+            }
         }
     ))
 
@@ -118,6 +161,10 @@ fun McpServer.registerOperatorTools() {
                     put("type", "string")
                     put("description", "Name of the server to reboot")
                 })
+                put("confirm", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Set to true to confirm this destructive operation")
+                })
             })
             putJsonArray("required") {
                 add(JsonPrimitive("serverName"))
@@ -126,12 +173,22 @@ fun McpServer.registerOperatorTools() {
         requiredRole = AdminRole.OPERATOR,
         handler = { context, args ->
             val serverName = args?.get("serverName")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Server $serverName reboot initiated"
-                )),
-                isError = false
-            )
+            val confirm = args?.get("confirm")?.boolValue ?: false
+            if (!confirm) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Reboot not confirmed. Set confirm=true to proceed."
+                    )),
+                    isError = true
+                )
+            } else {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Server $serverName reboot initiated"
+                    )),
+                    isError = false
+                )
+            }
         }
     ))
 
@@ -145,6 +202,10 @@ fun McpServer.registerOperatorTools() {
                     put("type", "string")
                     put("description", "Name of the server to shutdown")
                 })
+                put("confirm", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Set to true to confirm this destructive operation")
+                })
             })
             putJsonArray("required") {
                 add(JsonPrimitive("serverName"))
@@ -153,12 +214,22 @@ fun McpServer.registerOperatorTools() {
         requiredRole = AdminRole.OPERATOR,
         handler = { context, args ->
             val serverName = args?.get("serverName")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Server $serverName shutdown initiated"
-                )),
-                isError = false
-            )
+            val confirm = args?.get("confirm")?.boolValue ?: false
+            if (!confirm) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Shutdown not confirmed. Set confirm=true to proceed."
+                    )),
+                    isError = true
+                )
+            } else {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Server $serverName shutdown initiated"
+                    )),
+                    isError = false
+                )
+            }
         }
     ))
 
@@ -176,6 +247,10 @@ fun McpServer.registerOperatorTools() {
                     put("type", "string")
                     put("description", "Pod name")
                 })
+                put("confirm", buildJsonObject {
+                    put("type", "boolean")
+                    put("description", "Set to true to confirm this destructive operation")
+                })
             })
             putJsonArray("required") {
                 add(JsonPrimitive("namespace"))
@@ -186,12 +261,22 @@ fun McpServer.registerOperatorTools() {
         handler = { context, args ->
             val namespace = args?.get("namespace")?.stringValue ?: ""
             val podName = args?.get("podName")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Pod $namespace/$podName restart initiated"
-                )),
-                isError = false
-            )
+            val confirm = args?.get("confirm")?.boolValue ?: false
+            if (!confirm) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Restart not confirmed. Set confirm=true to proceed."
+                    )),
+                    isError = true
+                )
+            } else {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "Pod $namespace/$podName restart initiated"
+                    )),
+                    isError = false
+                )
+            }
         }
     ))
 }
