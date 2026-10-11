@@ -8,6 +8,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import net.kigawa.admin.server.AdminPrincipal
 import net.kigawa.admin.server.AdminRole
+import net.kigawa.admin.server.auditLog
+import net.kigawa.admin.server.mcp.McpCallContext
 
 /**
  * MCP Server implementation for admin-panel
@@ -114,6 +116,16 @@ class McpServer {
             ),
             serverInfo = ServerInfo()
         )
+        
+        // Audit log the initialize request
+        auditLog(
+            principal = null,
+            operation = "mcp.initialize",
+            target = "initialize",
+            result = "success",
+            detail = "protocol_version=${params?.protocolVersion}"
+        )
+        
         return McpResponse(id = request.id, result = json.encodeToJsonElement(InitializeResult.serializer(), result))
     }
 
@@ -124,6 +136,16 @@ class McpServer {
         // 役職の集合全体で可視ツールを絞る(以前は roles.firstOrNull() で
         // 1つだけ見ており、集合の走査順に結果が依存していた)。
         val result = ListToolsResult(tools = visibleTools(principal))
+        
+        // Audit log the tools list request
+        auditLog(
+            principal = principal,
+            operation = "mcp.tools.list",
+            target = "tools",
+            result = "success",
+            detail = "tool_count=${result.tools.size}"
+        )
+        
         return McpResponse(id = request.id, result = json.encodeToJsonElement(ListToolsResult.serializer(), result))
     }
 
@@ -152,6 +174,16 @@ class McpServer {
                 "MCP permission denied: user={} tool={} required={} actual={}",
                 context.principal.userId, tool.name, tool.requiredRole, context.principal.roles
             )
+            
+            // Audit log the permission denied
+            auditLog(
+                principal = context.principal,
+                operation = "mcp.tool.call",
+                target = tool.name,
+                result = "permission_denied",
+                detail = "required=${tool.requiredRole}, actual=${context.principal.roles.joinToString(", ")}"
+            )
+            
             return McpResponse(
                 id = request.id,
                 error = McpError(
@@ -164,10 +196,29 @@ class McpServer {
         // Execute tool
         try {
             val result = tool.handler(context, params?.arguments)
+            
+            // Audit log the tool execution
+            auditLog(
+                principal = context.principal,
+                operation = "mcp.tool.call",
+                target = tool.name,
+                result = "success",
+                detail = "args=$(params?.arguments?.toString())"
+            )
+            
             return McpResponse(id = request.id, result = json.encodeToJsonElement(CallToolResult.serializer(), result))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            // Audit log the failed tool execution
+            auditLog(
+                principal = context.principal,
+                operation = "mcp.tool.call",
+                target = tool.name,
+                result = "error",
+                detail = "error=${e.message}"
+            )
+            
             return McpResponse(
                 id = request.id,
                 error = McpError(
