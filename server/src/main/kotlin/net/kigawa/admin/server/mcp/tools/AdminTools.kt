@@ -21,30 +21,38 @@ import net.kigawa.admin.server.mcp.intValue
 import net.kigawa.admin.server.mcp.boolValue
 
 /**
+ * Administrative MCP mutations and inventory placeholders must never imply that
+ * a backend action succeeded before #225 connects the actual service.
+ * The message excludes user-supplied arguments and credentials.
+ */
+internal fun unavailableAdminMcpTool(toolName: String): CallToolResult =
+    CallToolResult(
+        content = listOf(ToolContent.Text(
+            text = "operation_unavailable: $toolName is not connected to an execution service"
+        )),
+        isError = true,
+    )
+
+/**
  * Registers all MCP tools for admin role
  */
 fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQueryService) {
     registerTool(McpTool(
         name = "users.list",
-        description = "List all users",
+        description = "List all users (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject { })
         },
         requiredRole = AdminRole.ADMIN,
         handler = { context, _ ->
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Users: kigawa (admin), tmp-viewer1 (viewer), tmp-viewer2 (operator), tmp-viewer3 (viewer)"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("users.list")
         }
     ))
 
     registerTool(McpTool(
         name = "users.create",
-        description = "Create a new user",
+        description = "Create a new user (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -75,18 +83,13 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
         requiredRole = AdminRole.ADMIN,
         handler = { context, args ->
             val username = args?.get("username")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "User $username created successfully"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("users.create")
         }
     ))
 
     registerTool(McpTool(
         name = "users.enable",
-        description = "Enable a user",
+        description = "Enable a user (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -102,18 +105,13 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
         requiredRole = AdminRole.ADMIN,
         handler = { context, args ->
             val username = args?.get("username")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "User $username enabled"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("users.enable")
         }
     ))
 
     registerTool(McpTool(
         name = "users.disable",
-        description = "Disable a user",
+        description = "Disable a user (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -129,18 +127,13 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
         requiredRole = AdminRole.ADMIN,
         handler = { context, args ->
             val username = args?.get("username")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "User $username disabled"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("users.disable")
         }
     ))
 
     registerTool(McpTool(
         name = "users.resetPassword",
-        description = "Reset user password",
+        description = "Reset user password (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -156,18 +149,13 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
         requiredRole = AdminRole.ADMIN,
         handler = { context, args ->
             val username = args?.get("username")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Password reset for $username sent"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("users.resetPassword")
         }
     ))
 
     registerTool(McpTool(
         name = "users.delete",
-        description = "Delete a user",
+        description = "Delete a user (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -198,37 +186,27 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
                     isError = true
                 )
             } else {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(
-                        text = "User $username deleted"
-                    )),
-                    isError = false
-                )
+                unavailableAdminMcpTool("users.delete")
             }
         }
     ))
 
     registerTool(McpTool(
         name = "organizations.list",
-        description = "List all organizations",
+        description = "List all organizations (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject { })
         },
         requiredRole = AdminRole.ADMIN,
         handler = { context, _ ->
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Organizations: kigawa-net, fusha, onemc, pixelsia"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("organizations.list")
         }
     ))
 
     registerTool(McpTool(
         name = "organizations.create",
-        description = "Create a new organization",
+        description = "Create a new organization (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -249,18 +227,13 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
         requiredRole = AdminRole.ADMIN,
         handler = { context, args ->
             val name = args?.get("name")?.stringValue ?: ""
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Organization $name created"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("organizations.create")
         }
     ))
 
     registerTool(McpTool(
         name = "organizations.delete",
-        description = "Delete an organization",
+        description = "Delete an organization (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -291,12 +264,7 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
                     isError = true
                 )
             } else {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(
-                        text = "Organization $name deleted"
-                    )),
-                    isError = false
-                )
+                unavailableAdminMcpTool("organizations.delete")
             }
         }
     ))
@@ -327,7 +295,7 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
 
     registerTool(McpTool(
         name = "github_app.ci_token.get",
-        description = "Get CI token policy for GitHub App",
+        description = "Get CI token policy for GitHub App (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -343,18 +311,13 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
         requiredRole = AdminRole.ADMIN,
         handler = { context, args ->
             val installationId = args?.get("installationId")?.intValue ?: 0
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "CI token policy for installation $installationId: 1h TTL, repo scope"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("github_app.ci_token.get")
         }
     ))
 
     registerTool(McpTool(
         name = "github_app.ci_token.set",
-        description = "Set CI token policy for GitHub App",
+        description = "Set CI token policy for GitHub App (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -380,18 +343,13 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
         requiredRole = AdminRole.ADMIN,
         handler = { context, args ->
             val installationId = args?.get("installationId")?.intValue ?: 0
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "CI token policy updated for installation $installationId"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("github_app.ci_token.set")
         }
     ))
 
     registerTool(McpTool(
         name = "github_app.ci_token.delete",
-        description = "Delete CI token policy for GitHub App",
+        description = "Delete CI token policy for GitHub App (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -407,12 +365,7 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
         requiredRole = AdminRole.ADMIN,
         handler = { context, args ->
             val installationId = args?.get("installationId")?.intValue ?: 0
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "CI token policy deleted for installation $installationId"
-                )),
-                isError = false
-            )
+            unavailableAdminMcpTool("github_app.ci_token.delete")
         }
     ))
 
