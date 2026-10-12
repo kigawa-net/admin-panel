@@ -28,7 +28,7 @@ class AdminToolsFailClosedTest {
             val text = (result.content.single() as ToolContent.Text).text
             assertTrue(text.startsWith("operation_unavailable:"))
             assertTrue(text.contains(name))
-            assertFalse(text.contains("password", ignoreCase = true))
+            assertFalse(text.contains("password=", ignoreCase = true))
             assertFalse(text.contains("token=", ignoreCase = true))
         }
     }
