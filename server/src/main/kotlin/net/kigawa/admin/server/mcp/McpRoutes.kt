@@ -8,6 +8,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import net.kigawa.admin.server.AdminRole
+import net.kigawa.admin.server.GithubInstallationQueryService
 import net.kigawa.admin.server.requireRole
 import net.kigawa.admin.server.mcp.tools.registerAllTools
 
@@ -44,7 +45,7 @@ object McpServerInstance {
         }
     }
 
-    fun initialize() {
-        getInstance().registerAllTools()
+    fun initialize(githubInstallationQueries: GithubInstallationQueryService) {
+        getInstance().registerAllTools(githubInstallationQueries)
     }
 }
