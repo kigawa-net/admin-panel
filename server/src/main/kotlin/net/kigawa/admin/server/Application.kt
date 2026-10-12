@@ -275,6 +275,10 @@ fun Application.module() {
             // possess. Reject before token mint, without bypassing branch protection.
             val missingGrant = installationPermissionMismatch(request.permissions, installation.permissions)
             if (missingGrant != null) {
+                call.application.log.warn(
+                    "event=ci.token.denied reason=installation_permission_insufficient caller={} owner={} permission={} requested={} granted={}",
+                    callerRepository, owner, missingGrant.permission, missingGrant.requested, missingGrant.granted
+                )
                 call.respond(
                     HttpStatusCode.Forbidden,
                     mapOf(
@@ -296,6 +300,11 @@ fun Application.module() {
             // to a caller if the response doesn't contain the required permissions.
             val missingTokenPermission = installationPermissionMismatch(request.permissions, minted.permissions)
             if (missingTokenPermission != null) {
+                call.application.log.warn(
+                    "event=ci.token.denied reason=token_permission_insufficient caller={} owner={} permission={} requested={} granted={}",
+                    callerRepository, owner, missingTokenPermission.permission,
+                    missingTokenPermission.requested, missingTokenPermission.granted
+                )
                 call.respond(
                     HttpStatusCode.Forbidden,
                     mapOf(
@@ -307,6 +316,10 @@ fun Application.module() {
                 )
                 return@post
             }
+            call.application.log.info(
+                "event=ci.token.minted caller={} owner={} repositories={} requestedPermissions={}",
+                callerRepository, owner, request.repositories, request.permissions?.keys?.sorted()
+            )
             call.respond(minted)
         }
 
