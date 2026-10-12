@@ -35,6 +35,8 @@ jobs:
       MARIADB_DATABASE: admin_panel
       MARIADB_USER: admin_panel
       MARIADB_PASSWORD: ci_test
+      # Integration migration tests must fail if the DB fixture is unavailable.
+      MARIADB_MIGRATION_TEST_REQUIRED: 'true'
     steps:
       - name: Checkout PR
         uses: actions/checkout@v4
