@@ -271,14 +271,56 @@ fun Application.module() {
                 return@post
             }
             val installation = GithubApp.getOrgInstallation(httpClient, owner)
-            call.respond(
-                GithubApp.createInstallationToken(
-                    httpClient,
-                    installation.id,
-                    repositories = request.repositories,
-                    permissions = request.permissions
+            // The policy can allow a permission which the installed GitHub App does not
+            // possess. Reject before token mint, without bypassing branch protection.
+            val missingGrant = installationPermissionMismatch(request.permissions, installation.permissions)
+            if (missingGrant != null) {
+                logger.warn(
+                    "event=ci.token.denied reason=installation_permission_insufficient caller={} owner={} permission={} requested={} granted={}",
+                    callerRepository, owner, missingGrant.permission, missingGrant.requested, missingGrant.granted
                 )
+                call.respond(
+                    HttpStatusCode.Forbidden,
+                    mapOf(
+                        "error" to "installation_permission_insufficient",
+                        "permission" to missingGrant.permission,
+                        "requested" to missingGrant.requested,
+                        "granted" to missingGrant.granted
+                    )
+                )
+                return@post
+            }
+            val minted = GithubApp.createInstallationToken(
+                httpClient,
+                installation.id,
+                repositories = request.repositories,
+                permissions = request.permissions
             )
+            // Also verify the actual token scope returned by GitHub: never hand the token
+            // to a caller if the response doesn't contain the required permissions.
+            val missingTokenPermission = installationPermissionMismatch(request.permissions, minted.permissions)
+            if (missingTokenPermission != null) {
+                logger.warn(
+                    "event=ci.token.denied reason=token_permission_insufficient caller={} owner={} permission={} requested={} granted={}",
+                    callerRepository, owner, missingTokenPermission.permission,
+                    missingTokenPermission.requested, missingTokenPermission.granted
+                )
+                call.respond(
+                    HttpStatusCode.Forbidden,
+                    mapOf(
+                        "error" to "token_permission_insufficient",
+                        "permission" to missingTokenPermission.permission,
+                        "requested" to missingTokenPermission.requested,
+                        "granted" to missingTokenPermission.granted
+                    )
+                )
+                return@post
+            }
+            logger.info(
+                "event=ci.token.minted caller={} owner={} repositories={} requestedPermissions={}",
+                callerRepository, owner, request.repositories, request.permissions?.keys?.sorted()
+            )
+            call.respond(minted)
         }
 
         // 認証が必要なAPI(issue #183): Keycloakのclient role(viewer/operator/admin)で認可する。

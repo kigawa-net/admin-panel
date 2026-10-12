@@ -54,6 +54,34 @@ data class GithubCiTokenRequest(
     @SerialName("permissions") val permissions: Map<String, String>? = null
 )
 
+/**
+ * Fail-closed comparison of a requested GitHub App token's permissions with the
+ * installation's actual grants. Policy approval alone does not imply App permission.
+ * Do not expose token material or private installation configuration in responses.
+ */
+internal data class InstallationPermissionMismatch(
+    val permission: String,
+    val requested: String,
+    val granted: String,
+)
+
+internal fun installationPermissionMismatch(
+    requested: Map<String, String>?,
+    granted: Map<String, String>,
+): InstallationPermissionMismatch? {
+    val permissionOrder = mapOf("read" to 1, "write" to 2, "admin" to 3)
+    return requested.orEmpty().entries.firstNotNullOfOrNull { (permission, need) ->
+        val actual = granted[permission]
+        val requiredLevel = permissionOrder[need]
+        val actualLevel = actual?.let(permissionOrder::get)
+        if (requiredLevel == null || actualLevel == null || actualLevel < requiredLevel) {
+            InstallationPermissionMismatch(permission, need, actual ?: "absent")
+        } else {
+            null
+        }
+    }
+}
+
 @Serializable
 data class GithubRepository(
     @SerialName("full_name") val fullName: String
