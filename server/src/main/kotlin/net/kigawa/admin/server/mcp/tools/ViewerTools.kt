@@ -14,30 +14,38 @@ import net.kigawa.admin.server.mcp.ToolContent
 import net.kigawa.admin.server.mcp.intValue
 
 /**
+ * Do not report fabricated health, metrics, topology, server inventories, or
+ * organization membership while viewer tools are not connected to real services.
+ * See #225 and #261. No user-provided values are reflected in the response.
+ */
+internal fun viewerDataUnavailable(toolName: String): CallToolResult =
+    CallToolResult(
+        content = listOf(ToolContent.Text(
+            text = "operation_unavailable: $toolName is not connected to a data service"
+        )),
+        isError = true,
+    )
+
+/**
  * Registers all MCP tools for viewer role
  */
 fun McpServer.registerViewerTools() {
     registerTool(McpTool(
         name = "dashboard.get",
-        description = "Get dashboard overview with key metrics",
+        description = "Get dashboard overview with key metrics (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject { })
         },
         requiredRole = AdminRole.VIEWER,
         handler = { context, _ ->
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Dashboard: Cluster healthy, 7 nodes, 95% resource utilization"
-                )),
-                isError = false
-            )
+            viewerDataUnavailable("dashboard.get")
         }
     ))
 
     registerTool(McpTool(
         name = "dashboard.getTraffic",
-        description = "Get network traffic data",
+        description = "Get network traffic data (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -51,72 +59,52 @@ fun McpServer.registerViewerTools() {
         requiredRole = AdminRole.VIEWER,
         handler = { context, args ->
             val rangeMinutes = args?.get("rangeMinutes")?.intValue ?: 60
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Traffic data for last $rangeMinutes minutes: In: 1.2 GB, Out: 850 MB"
-                )),
-                isError = false
-            )
+            viewerDataUnavailable("dashboard.getTraffic")
         }
     ))
 
     registerTool(McpTool(
         name = "network.topology.get",
-        description = "Get network topology graph",
+        description = "Get network topology graph (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject { })
         },
         requiredRole = AdminRole.VIEWER,
         handler = { context, _ ->
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Network topology: 7 nodes, 4 WireGuard tunnels, 3 ISP uplinks"
-                )),
-                isError = false
-            )
+            viewerDataUnavailable("network.topology.get")
         }
     ))
 
     registerTool(McpTool(
         name = "servers.list",
-        description = "List all servers with their status",
+        description = "List all servers with their status (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject { })
         },
         requiredRole = AdminRole.VIEWER,
         handler = { context, _ ->
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Servers: k8s-worker1 (healthy), k8s-worker3 (healthy), k8s1 (healthy), host1 (Proxmox)"
-                )),
-                isError = false
-            )
+            viewerDataUnavailable("servers.list")
         }
     ))
 
     registerTool(McpTool(
         name = "infrastructure.get",
-        description = "Get infrastructure overview",
+        description = "Get infrastructure overview (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject { })
         },
         requiredRole = AdminRole.VIEWER,
         handler = { context, _ ->
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Infrastructure: 4 Proxmox hosts, 7 K8s nodes, 2 ISP uplinks, 100% uptime"
-                )),
-                isError = false
-            )
+            viewerDataUnavailable("infrastructure.get")
         }
     ))
 
     registerTool(McpTool(
         name = "infrastructure.resourceUsage.get",
-        description = "Get infrastructure resource usage metrics",
+        description = "Get infrastructure resource usage metrics (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -130,30 +118,20 @@ fun McpServer.registerViewerTools() {
         requiredRole = AdminRole.VIEWER,
         handler = { context, args ->
             val rangeMinutes = args?.get("rangeMinutes")?.intValue ?: 60
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Resource usage (last $rangeMinutes min): CPU 45%, Memory 62%, Disk 38%"
-                )),
-                isError = false
-            )
+            viewerDataUnavailable("infrastructure.resourceUsage.get")
         }
     ))
 
     registerTool(McpTool(
         name = "organizations.mine",
-        description = "Get organizations accessible to current user",
+        description = "Get organizations accessible to current user (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject { })
         },
         requiredRole = AdminRole.VIEWER,
         handler = { context, _ ->
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "Your organizations: kigawa-net (owner)"
-                )),
-                isError = false
-            )
+            viewerDataUnavailable("organizations.mine")
         }
     ))
 }
