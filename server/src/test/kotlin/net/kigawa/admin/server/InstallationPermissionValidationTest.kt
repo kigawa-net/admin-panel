@@ -67,4 +67,36 @@ class InstallationPermissionValidationTest {
             installationPermissionMismatch(requested, mapOf("contents" to "write")),
         )
     }
+
+    @Test
+    fun `admin grant satisfies write request`() {
+        assertNull(
+            installationPermissionMismatch(
+                requested = mapOf("pull_requests" to "write"),
+                granted = mapOf("pull_requests" to "admin"),
+            )
+        )
+    }
+
+    @Test
+    fun `write grant does not satisfy admin request`() {
+        assertEquals(
+            InstallationPermissionMismatch("contents", "admin", "write"),
+            installationPermissionMismatch(
+                requested = mapOf("contents" to "admin"),
+                granted = mapOf("contents" to "write"),
+            )
+        )
+    }
+
+    @Test
+    fun `unknown granted permission level fails closed`() {
+        assertEquals(
+            InstallationPermissionMismatch("contents", "read", "custom"),
+            installationPermissionMismatch(
+                requested = mapOf("contents" to "read"),
+                granted = mapOf("contents" to "custom"),
+            )
+        )
+    }
 }
