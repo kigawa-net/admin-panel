@@ -379,9 +379,7 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
         requiredRole = AdminRole.ADMIN,
         handler = { context, _ ->
             try {
-                val policies = kotlinx.coroutines.runBlocking {
-                    net.kigawa.admin.server.listCiTokenPolicies()
-                }
+                val policies = net.kigawa.admin.server.listCiTokenPolicies()
                 // ToolContent.Text に生のテキストを入れる。以前はここでも
                 // {"type":"text",...} を自前で組んでいたため、
                 // シリアライザ側の型判定と重なり二重エンコードになっていた。
@@ -390,11 +388,10 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
                     content = listOf(ToolContent.Text(text = text)),
                     isError = false
                 )
-            } catch (e: Exception) {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(text = "Error listing CI policies: ${e.message}")),
-                    isError = true
-                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                ciPolicyFailureResult("list")
             }
         }
     ))
@@ -454,19 +451,16 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
                         allowedRepositories = allowedRepositories,
                         allowedPermissions = allowedPermissions
                     )
-                    kotlinx.coroutines.runBlocking {
-                        net.kigawa.admin.server.upsertCiTokenPolicy(entry)
-                    }
+                    net.kigawa.admin.server.upsertCiTokenPolicy(entry)
                     CallToolResult(
                         content = listOf(ToolContent.Text(text = "CI token policy updated for $callerRepository")),
                         isError = false
                     )
                 }
-            } catch (e: Exception) {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(text = "Error updating CI policy: ${e.message}")),
-                    isError = true
-                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                ciPolicyFailureResult("update")
             }
         }
     ))
@@ -496,19 +490,16 @@ fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQu
                         isError = true
                     )
                 } else {
-                    val deleted = kotlinx.coroutines.runBlocking {
-                        net.kigawa.admin.server.deleteCiTokenPolicy(callerRepository)
-                    }
+                    val deleted = net.kigawa.admin.server.deleteCiTokenPolicy(callerRepository)
                     CallToolResult(
                         content = listOf(ToolContent.Text(text = if (deleted) "CI token policy deleted for $callerRepository" else "No such policy: $callerRepository")),
                         isError = false
                     )
                 }
-            } catch (e: Exception) {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(text = "Error deleting CI policy: ${e.message}")),
-                    isError = true
-                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                ciPolicyFailureResult("delete")
             }
         }
     ))
@@ -521,4 +512,13 @@ internal fun githubInstallationsToMcpResult(installations: List<GithubInstallati
     CallToolResult(
         content = listOf(ToolContent.Text(text = Json.encodeToString(installations))),
         isError = false,
+    )
+
+/** Never include database/driver exception messages in MCP tool responses. */
+internal fun ciPolicyFailureResult(operation: String): CallToolResult =
+    CallToolResult(
+        content = listOf(ToolContent.Text(
+            text = "backend_unavailable: CI token policy $operation failed"
+        )),
+        isError = true,
     )
