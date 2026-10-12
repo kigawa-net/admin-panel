@@ -17,15 +17,28 @@ class SchemaMigrationTest {
         if (!isDatabaseConfigured) return@runBlocking
 
         val before = withDbConnection { conn ->
-            conn.prepareStatement(
-                "SELECT allowed_owner FROM ci_token_policy WHERE caller_repository = ?"
+            val policy = conn.prepareStatement(
+                "SELECT allowed_owner, allowed_repositories, allowed_permissions " +
+                    "FROM ci_token_policy WHERE caller_repository = ?"
             ).use { statement ->
                 statement.setString(1, "OneServerMC/RpgCore")
                 statement.executeQuery().use { result ->
                     assertTrue(result.next(), "CI fixture is required for this migration test")
-                    result.getString(1)
+                    listOf(result.getString(1), result.getString(2), result.getString(3))
                 }
             }
+            val watchdog = conn.createStatement().use { statement ->
+                statement.executeQuery(
+                    "SELECT id, last_ping_at FROM watchdog_ping ORDER BY id"
+                ).use { rows ->
+                    buildList {
+                        while (rows.next()) {
+                            add(rows.getInt(1).toString() to rows.getTimestamp(2).toString())
+                        }
+                    }
+                }
+            }
+            policy to watchdog
         }
 
         initDatabaseSchema()
@@ -44,16 +57,29 @@ class SchemaMigrationTest {
                 }
             }
             conn.prepareStatement(
-                "SELECT allowed_owner, version, oidc_constraints FROM ci_token_policy WHERE caller_repository = ?"
+                "SELECT allowed_owner, allowed_repositories, allowed_permissions, " +
+                    "version, oidc_constraints FROM ci_token_policy WHERE caller_repository = ?"
             ).use { statement ->
                 statement.setString(1, "OneServerMC/RpgCore")
                 statement.executeQuery().use { rows ->
                     assertTrue(rows.next())
-                    assertEquals(before, rows.getString("allowed_owner"))
+                    assertEquals(before.first, listOf(rows.getString(1), rows.getString(2), rows.getString(3)))
                     assertEquals(1L, rows.getLong("version"))
                     assertEquals(null, rows.getString("oidc_constraints"))
                 }
             }
+            val watchdogAfter = conn.createStatement().use { statement ->
+                statement.executeQuery(
+                    "SELECT id, last_ping_at FROM watchdog_ping ORDER BY id"
+                ).use { rows ->
+                    buildList {
+                        while (rows.next()) {
+                            add(rows.getInt(1).toString() to rows.getTimestamp(2).toString())
+                        }
+                    }
+                }
+            }
+            assertEquals(before.second, watchdogAfter)
         }
     }
 }
