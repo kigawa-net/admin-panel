@@ -97,12 +97,12 @@ class McpServer {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            logger.error("MCP call failed: ${request.method}", e)
+            logger.error("MCP call failed: method={} exceptionType={}", request.method, e.javaClass.simpleName)
             McpResponse(
                 id = request.id,
                 error = McpError(
                     code = McpErrorCodes.INTERNAL_ERROR,
-                    message = "Internal error: ${e.message}"
+                    message = "Internal MCP error"
                 )
             )
         }
@@ -206,7 +206,7 @@ class McpServer {
                 operation = "mcp.tool.call",
                 target = tool.name,
                 result = "success",
-                detail = "args=$(params?.arguments?.toString())"
+                detail = "arguments_omitted"
             )
             
             return McpResponse(id = request.id, result = json.encodeToJsonElement(CallToolResult.serializer(), result))
@@ -219,14 +219,14 @@ class McpServer {
                 operation = "mcp.tool.call",
                 target = tool.name,
                 result = "error",
-                detail = "error=${e.message}"
+                detail = "exception_type=${e.javaClass.simpleName}"
             )
             
             return McpResponse(
                 id = request.id,
                 error = McpError(
                     code = McpErrorCodes.INTERNAL_ERROR,
-                    message = "Tool execution failed: ${e.message}"
+                    message = "Tool execution failed"
                 )
             )
         }
