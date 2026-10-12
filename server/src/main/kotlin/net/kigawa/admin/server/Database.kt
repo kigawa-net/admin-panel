@@ -4,6 +4,7 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.flywaydb.core.Flyway
 import java.sql.Connection
 
 /**
@@ -36,30 +37,98 @@ internal suspend fun <T> withDbConnection(block: (Connection) -> T): T =
         dataSource.connection.use(block)
     }
 
-/** 起動時に一度だけ呼ぶ。テーブルが無ければ作成する(マイグレーションツールを入れるほどの規模ではないため素朴なDDLで済ませる)。 */
-internal fun initDatabaseSchema() {
-    dataSource.connection.use { conn ->
-        conn.createStatement().use { stmt ->
-            stmt.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ci_token_policy (
-                    caller_repository VARCHAR(255) PRIMARY KEY,
-                    allowed_owner VARCHAR(255) NOT NULL,
-                    allowed_repositories TEXT NOT NULL,
-                    allowed_permissions TEXT NOT NULL
-                )
-                """.trimIndent()
-            )
-            // k8s-system#220: AlertmanagerのWatchdog(dead man's switch)pingの最終受信時刻。
-            // 単一行(id=1)のみを使い回す。
-            stmt.execute(
-                """
-                CREATE TABLE IF NOT EXISTS watchdog_ping (
-                    id INT PRIMARY KEY,
-                    last_ping_at TIMESTAMP NOT NULL
-                )
-                """.trimIndent()
-            )
+/**
+ * A legacy production database has the V1 tables but no Flyway history.
+ * Before enabling baselineOnMigrate, verify it is EXACTLY the known legacy
+ * schema: otherwise automatically baselining an arbitrary DB is dangerous.
+ */
+private data class LegacyColumn(
+    val type: String,
+    val notNull: Boolean,
+    val primary: Boolean,
+    val charLength: Long? = null,
+)
+
+private val legacyTables = mapOf(
+    "ci_token_policy" to mapOf(
+        "caller_repository" to LegacyColumn("varchar", true, true, 255),
+        "allowed_owner" to LegacyColumn("varchar", true, false, 255),
+        "allowed_repositories" to LegacyColumn("text", true, false),
+        "allowed_permissions" to LegacyColumn("text", true, false),
+    ),
+    "watchdog_ping" to mapOf(
+        "id" to LegacyColumn("int", true, true),
+        "last_ping_at" to LegacyColumn("timestamp", true, false),
+    ),
+)
+
+/**
+ * No DDL is performed during preflight. A history-managed database is always
+ * checked by Flyway validation; a legacy schema without history must exactly
+ * match V1 before we record baseline version 0.
+ */
+private fun checkLegacySchemaBeforeBaseline(connection: Connection) {
+    val tables = connection.createStatement().use { statement ->
+        statement.executeQuery(
+            "SELECT TABLE_NAME FROM information_schema.TABLES " +
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'"
+        ).use { rows ->
+            buildSet {
+                while (rows.next()) add(rows.getString(1))
+            }
         }
     }
+
+    if ("flyway_schema_history" in tables || tables.isEmpty()) return
+    check(tables == legacyTables.keys) {
+        "Unexpected legacy admin-panel tables; refusing Flyway baseline"
+    }
+
+    for ((table, expected) in legacyTables) {
+        val actual = connection.prepareStatement(
+            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, CHARACTER_MAXIMUM_LENGTH " +
+                "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?"
+        ).use { statement ->
+            statement.setString(1, table)
+            statement.executeQuery().use { rows ->
+                buildMap {
+                    while (rows.next()) {
+                        val length = rows.getLong("CHARACTER_MAXIMUM_LENGTH")
+                            .let { if (rows.wasNull()) null else it }
+                        put(
+                            rows.getString("COLUMN_NAME"),
+                            LegacyColumn(
+                                type = rows.getString("DATA_TYPE").lowercase(),
+                                notNull = rows.getString("IS_NULLABLE") == "NO",
+                                primary = rows.getString("COLUMN_KEY") == "PRI",
+                                charLength = length.takeIf { rows.getString("DATA_TYPE") == "varchar" },
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        check(actual == expected) {
+            "Unexpected legacy column layout for $table; refusing Flyway baseline"
+        }
+    }
+}
+
+/**
+ * #228: run versioned migrations and verify legacy schema before baseline.
+ * Migrating at startup is fail-fast: a schema mismatch must never silently
+ * leave the CI token broker running against a partially migrated database.
+ * Flyway's schema history lock serializes concurrent application startups.
+ */
+internal fun initDatabaseSchema() {
+    dataSource.connection.use(::checkLegacySchemaBeforeBaseline)
+    val flyway = Flyway.configure()
+        .dataSource(dataSource)
+        .locations("classpath:db/migration")
+        .baselineVersion("0")
+        .baselineOnMigrate(true)
+        .validateOnMigrate(true)
+        .load()
+    flyway.migrate()
+    flyway.validate()
 }
