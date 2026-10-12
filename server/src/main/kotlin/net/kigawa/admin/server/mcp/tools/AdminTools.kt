@@ -1,5 +1,8 @@
 package net.kigawa.admin.server.mcp.tools
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -7,6 +10,8 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.putJsonArray
 import net.kigawa.admin.server.AdminRole
+import net.kigawa.admin.server.GithubInstallation
+import net.kigawa.admin.server.GithubInstallationQueryService
 import net.kigawa.admin.server.mcp.CallToolResult
 import net.kigawa.admin.server.mcp.McpServer
 import net.kigawa.admin.server.mcp.McpTool
@@ -18,7 +23,7 @@ import net.kigawa.admin.server.mcp.boolValue
 /**
  * Registers all MCP tools for admin role
  */
-fun McpServer.registerAdminTools() {
+fun McpServer.registerAdminTools(githubInstallationQueries: GithubInstallationQueryService) {
     registerTool(McpTool(
         name = "users.list",
         description = "List all users",
@@ -304,13 +309,19 @@ fun McpServer.registerAdminTools() {
             put("properties", buildJsonObject { })
         },
         requiredRole = AdminRole.ADMIN,
-        handler = { context, _ ->
-            CallToolResult(
-                content = listOf(ToolContent.Text(
-                    text = "GitHub App installations: kigawa-net (active), fusha (pending)"
-                )),
-                isError = false
-            )
+        handler = { _, _ ->
+            try {
+                githubInstallationsToMcpResult(githubInstallationQueries.list())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                CallToolResult(
+                    content = listOf(ToolContent.Text(
+                        text = "backend_unavailable: GitHub App installation inventory could not be loaded"
+                    )),
+                    isError = true
+                )
+            }
         }
     ))
 
@@ -549,3 +560,12 @@ fun McpServer.registerAdminTools() {
         }
     ))
 }
+/**
+ * No token or private-key material is present in the installation inventory DTO.
+ * Keep serialization centralized so MCP never returns fabricated installation status.
+ */
+internal fun githubInstallationsToMcpResult(installations: List<GithubInstallation>): CallToolResult =
+    CallToolResult(
+        content = listOf(ToolContent.Text(text = Json.encodeToString(installations))),
+        isError = false,
+    )
