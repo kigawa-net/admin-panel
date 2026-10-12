@@ -14,7 +14,12 @@ import kotlin.test.assertTrue
 class SchemaMigrationTest {
     @Test
     fun `legacy schema migrates with intact policy and is repeatable`() = runBlocking {
-        if (!isDatabaseConfigured) return@runBlocking
+        if (!isDatabaseConfigured) {
+            check(System.getenv("MARIADB_MIGRATION_TEST_REQUIRED") != "true") {
+                "MariaDB migration integration test is required in CI but DB credentials are not configured"
+            }
+            return@runBlocking // Optional only for developer machines without a DB fixture.
+        }
 
         val before = withDbConnection { conn ->
             val policy = conn.prepareStatement(
