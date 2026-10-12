@@ -177,6 +177,9 @@ fun Application.module() {
         }
     }
 
+    // REST and MCP share the same read-only GitHub installation query.
+    val githubInstallationQueries = GithubInstallationQueryService { GithubApp.listInstallations(httpClient) }
+
     // シャットダウン/再起動はDrain+SSH実行で数十秒〜数分かかるため、リクエストを
     // ブロックせずバックグラウンドで実行する(進行状況はGET /api/serversの
     // 自動更新で確認できる。issue #58)。
@@ -206,7 +209,7 @@ fun Application.module() {
     }
 
     // MCP Serverのツール登録(issue #200)
-    net.kigawa.admin.server.mcp.McpServerInstance.initialize()
+    net.kigawa.admin.server.mcp.McpServerInstance.initialize(githubInstallationQueries)
 
     routing {
         get("/health") {
@@ -1013,7 +1016,7 @@ fun Application.module() {
                     call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
                     return@get
                 }
-                call.respond(GithubApp.listInstallations(httpClient))
+                call.respond(githubInstallationQueries.list())
             }
 
             post("/api/github-app/installations/{id}/token") {
