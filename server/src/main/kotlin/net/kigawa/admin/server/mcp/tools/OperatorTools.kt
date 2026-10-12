@@ -15,12 +15,25 @@ import net.kigawa.admin.server.mcp.stringValue
 import net.kigawa.admin.server.mcp.boolValue
 
 /**
+ * Until #225 connects an operator tool to a real service, never report a
+ * successful mutation. Explicit failure prevents MCP agents from believing
+ * that a Kubernetes/SSH operation happened.
+ */
+internal fun operatorActionUnavailable(toolName: String): CallToolResult =
+    CallToolResult(
+        content = listOf(ToolContent.Text(
+            text = "operation_unavailable: $toolName is not connected to an execution service"
+        )),
+        isError = true,
+    )
+
+/**
  * Registers all MCP tools for operator role
  */
 fun McpServer.registerOperatorTools() {
     registerTool(McpTool(
         name = "servers.cordon",
-        description = "Cordon a Kubernetes node (mark as unschedulable)",
+        description = "Cordon a Kubernetes node (mark as unschedulable) (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -49,19 +62,14 @@ fun McpServer.registerOperatorTools() {
                     isError = true
                 )
             } else {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(
-                        text = "Node $nodeName cordoned successfully"
-                    )),
-                    isError = false
-                )
+                operatorActionUnavailable("servers.cordon")
             }
         }
     ))
 
     registerTool(McpTool(
         name = "servers.uncordon",
-        description = "Uncordon a Kubernetes node (mark as schedulable)",
+        description = "Uncordon a Kubernetes node (mark as schedulable) (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -90,19 +98,14 @@ fun McpServer.registerOperatorTools() {
                     isError = true
                 )
             } else {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(
-                        text = "Node $nodeName uncordoned successfully"
-                    )),
-                    isError = false
-                )
+                operatorActionUnavailable("servers.uncordon")
             }
         }
     ))
 
     registerTool(McpTool(
         name = "servers.drain",
-        description = "Drain a Kubernetes node (evict all pods)",
+        description = "Drain a Kubernetes node (evict all pods) (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -141,19 +144,14 @@ fun McpServer.registerOperatorTools() {
                     isError = true
                 )
             } else {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(
-                        text = "Node $nodeName drain initiated"
-                    )),
-                    isError = false
-                )
+                operatorActionUnavailable("servers.drain")
             }
         }
     ))
 
     registerTool(McpTool(
         name = "servers.reboot",
-        description = "Reboot a server gracefully",
+        description = "Reboot a server gracefully (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -182,19 +180,14 @@ fun McpServer.registerOperatorTools() {
                     isError = true
                 )
             } else {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(
-                        text = "Server $serverName reboot initiated"
-                    )),
-                    isError = false
-                )
+                operatorActionUnavailable("servers.reboot")
             }
         }
     ))
 
     registerTool(McpTool(
         name = "servers.shutdown",
-        description = "Shutdown a server gracefully",
+        description = "Shutdown a server gracefully (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -223,19 +216,14 @@ fun McpServer.registerOperatorTools() {
                     isError = true
                 )
             } else {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(
-                        text = "Server $serverName shutdown initiated"
-                    )),
-                    isError = false
-                )
+                operatorActionUnavailable("servers.shutdown")
             }
         }
     ))
 
     registerTool(McpTool(
         name = "pods.restart",
-        description = "Restart a pod",
+        description = "Restart a pod (currently unavailable: backend not connected)",
         inputSchema = buildJsonObject {
             put("type", "object")
             put("properties", buildJsonObject {
@@ -270,12 +258,7 @@ fun McpServer.registerOperatorTools() {
                     isError = true
                 )
             } else {
-                CallToolResult(
-                    content = listOf(ToolContent.Text(
-                        text = "Pod $namespace/$podName restart initiated"
-                    )),
-                    isError = false
-                )
+                operatorActionUnavailable("pods.restart")
             }
         }
     ))

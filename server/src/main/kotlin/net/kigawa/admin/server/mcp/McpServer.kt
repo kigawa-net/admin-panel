@@ -205,7 +205,7 @@ class McpServer {
                 principal = context.principal,
                 operation = "mcp.tool.call",
                 target = tool.name,
-                result = "success",
+                result = if (result.isError) "failed" else "success",
                 detail = "arguments_omitted"
             )
             
