@@ -7,6 +7,11 @@ on:
     paths-ignore:
       - 'k8s/overlays/production/kustomization.yaml'
 
+# One promotion workflow at a time; an older build must not race a newer tag.
+concurrency:
+  group: admin-panel-main-image-promotion
+  cancel-in-progress: false
+
 jobs:
   build-push:
     runs-on: ubuntu-latest
@@ -86,29 +91,49 @@ jobs:
           cache-from: type=registry,ref=harbor.kigawa.net/library/admin-panel-api:buildcache
           cache-to: type=registry,ref=harbor.kigawa.net/library/admin-panel-api:buildcache,mode=max
 
-      - name: Update manifest image tag
-        run: |
-          cd k8s/overlays/production
-          sed -i 's|newTag:.*|newTag: main-${{ github.sha }}|' kustomization.yaml
-
-      # main は必須PRのブランチ保護がかかっており、ビルトインのgithub-actionsボットへの
-      # バイパス権限付与はREST/Repository Ruleset/Terraformのいずれの方式でも実際には
-      # 反映されないことを確認した(GitHubがリクエストを200で受理しても、
-      # bypassPullRequestAllowancesに永続化されない)。そのためmainへの直接pushは諦め、
-      # PRを作成してすぐにマージする方式にした。required_approving_review_count=0・
-      # 必須ステータスチェックなしのため、作成直後にマージ可能。
-      - name: Commit and push manifest update
+      # Always base the manifest PR on the latest main, not the checkout SHA
+      # from before the (potentially long-running) Docker build.
+      - name: Promote image tag through a fresh manifest PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          BRANCH="chore/image-tag-${{ github.sha }}"
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          git add k8s/overlays/production/kustomization.yaml
-          git commit -m "chore: update admin-panel image tag to main-${{ github.sha }}"
-          git push origin "$BRANCH"
-          PR_URL=$(gh pr create --title "chore: update admin-panel image tag to main-${{ github.sha }}" \
-            --body "CIによる自動更新(ビルド元コミット: ${{ github.sha }})" \
-            --base main --head "$BRANCH")
-          gh pr merge "$PR_URL" --squash --delete-branch
+
+          for attempt in 1 2; do
+            git fetch origin main
+            # The manifest tag bump is intentionally excluded: it is generated
+            # output, not an application build source revision.
+            latest_source="$(git log -1 --format=%H origin/main -- . ':(exclude)k8s/overlays/production/kustomization.yaml')"
+            if [ "$latest_source" != "$SOURCE_SHA" ]; then
+              echo "Skipping obsolete image promotion: source=$SOURCE_SHA latest=$latest_source"
+              exit 0
+            fi
+
+            branch="chore/image-tag-${SOURCE_SHA:0:12}-${RUN_ID}-${RUN_ATTEMPT}-${attempt}"
+            git checkout -B "$branch" origin/main
+            sed -i "s|newTag:.*|newTag: main-$SOURCE_SHA|" k8s/overlays/production/kustomization.yaml
+            if git diff --quiet -- k8s/overlays/production/kustomization.yaml; then
+              echo "Production manifest already references main-$SOURCE_SHA"
+              exit 0
+            fi
+            git add k8s/overlays/production/kustomization.yaml
+            git commit -m "chore: update admin-panel image tag to main-$SOURCE_SHA"
+            git push origin "$branch"
+            pr_url="$(gh pr create --title "chore: update admin-panel image tag to main-$SOURCE_SHA" \
+              --body "CIによる自動更新 (ビルド元: $SOURCE_SHA)" \
+              --base main --head "$branch")"
+            if gh pr merge "$pr_url" --squash --delete-branch; then
+              echo "Promoted main-$SOURCE_SHA"
+              exit 0
+            fi
+            echo "Manifest PR merge failed on attempt $attempt; closing stale PR and retrying from latest main"
+            gh pr close "$pr_url" --delete-branch || true
+          done
+
+          echo "ERROR: manifest promotion failed after conflict recovery"
+          exit 1
