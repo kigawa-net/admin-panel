@@ -115,6 +115,57 @@ private fun checkLegacySchemaBeforeBaseline(connection: Connection) {
 }
 
 /**
+ * Flyway validates migration history checksums but not arbitrary manual DDL
+ * changes on already-migrated databases. Reject missing or incompatible
+ * required columns even when flyway_schema_history is present.
+ *
+ * Additional columns are permitted so future expand-only migrations can be
+ * introduced without weakening these minimum schema requirements.
+ */
+private fun checkMigratedSchema(connection: Connection) {
+    val required = legacyTables.toMutableMap().apply {
+        put(
+            "ci_token_policy",
+            getValue("ci_token_policy") + mapOf(
+                "version" to LegacyColumn("bigint", true, false),
+                "oidc_constraints" to LegacyColumn("longtext", false, false),
+            ),
+        )
+    }
+    for ((table, expectedColumns) in required) {
+        val columns = connection.prepareStatement(
+            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, CHARACTER_MAXIMUM_LENGTH " +
+                "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?"
+        ).use { statement ->
+            statement.setString(1, table)
+            statement.executeQuery().use { rows ->
+                buildMap {
+                    while (rows.next()) {
+                        val dataType = rows.getString("DATA_TYPE").lowercase()
+                        val length = rows.getLong("CHARACTER_MAXIMUM_LENGTH")
+                            .let { if (rows.wasNull()) null else it }
+                        put(
+                            rows.getString("COLUMN_NAME"),
+                            LegacyColumn(
+                                type = dataType,
+                                notNull = rows.getString("IS_NULLABLE") == "NO",
+                                primary = rows.getString("COLUMN_KEY") == "PRI",
+                                charLength = length.takeIf { dataType == "varchar" },
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+        for ((column, expected) in expectedColumns) {
+            check(columns[column] == expected) {
+                "Missing or incompatible migrated column $table.$column; refusing startup"
+            }
+        }
+    }
+}
+
+/**
  * #228: run versioned migrations and verify legacy schema before baseline.
  * Migrating at startup is fail-fast: a schema mismatch must never silently
  * leave the CI token broker running against a partially migrated database.
@@ -131,4 +182,5 @@ internal fun initDatabaseSchema() {
         .load()
     flyway.migrate()
     flyway.validate()
+    dataSource.connection.use(::checkMigratedSchema)
 }
