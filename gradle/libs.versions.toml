@@ -14,6 +14,7 @@ logback = "1.5.12"
 sshj = "0.38.0"
 mariadb-java-client = "3.5.1"
 hikaricp = "6.2.1"
+flyway = "13.9.0"
 
 [libraries]
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
@@ -39,6 +40,8 @@ logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "lo
 sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }
 mariadb-java-client = { module = "org.mariadb.jdbc:mariadb-java-client", version.ref = "mariadb-java-client" }
 hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
+flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
+flyway-mysql = { module = "org.flywaydb:flyway-mysql", version.ref = "flyway" }
 
 [plugins]
 kotlinJvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

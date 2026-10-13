@@ -26,6 +26,8 @@ dependencies {
     implementation(libs.sshj)
     implementation(libs.mariadb.java.client)
     implementation(libs.hikaricp)
+    implementation(libs.flyway.core)
+    implementation(libs.flyway.mysql)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.ktor.client.mock)
