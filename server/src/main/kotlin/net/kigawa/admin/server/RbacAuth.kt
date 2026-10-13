@@ -13,6 +13,8 @@ import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
 import io.ktor.server.response.respond
 import io.ktor.server.routing.RoutingContext
+import net.kigawa.admin.server.mcp.McpErrorCodes
+import net.kigawa.admin.server.mcp.respondMcpAuthError
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -300,7 +302,8 @@ fun AuthenticationConfig.mcpJwt(
         }
         challenge { _, _ ->
             call.response.headers.append("WWW-Authenticate", "Bearer resource_metadata=\"https://admin.kigawa.net/.well-known/oauth-protected-resource\"")
-            call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+            // MCPクライアントは本文を JSON-RPC として解釈するため、JSON-RPC エラー形式で返す
+            respondMcpAuthError(call, HttpStatusCode.Unauthorized, McpErrorCodes.UNAUTHORIZED, "invalid or missing token")
         }
     }
 }
@@ -386,11 +389,18 @@ fun adminRolesFrom(rawRoleNames: Collection<String>): Set<AdminRole> {
  * 呼び出し側は `val principal = requireRole(AdminRole.VIEWER) ?: return@get` の形で抜ける。
  * 実際の拒否レスポンスは `authenticate("keycloak")` 側でも送出されるが、
  * プリンシパル不在時の保険として本ヘルパー側でも401を返す。
+ *
+ * [jsonRpcErrors] が true のとき(/mcp)は、本文を JSON-RPC エラー形式にする(ステータスは同じ)。
+ * 他のルートの本文は従来の `{"error":"..."}` のまま。
  */
-suspend fun RoutingContext.requireRole(required: AdminRole): AdminPrincipal? {
+suspend fun RoutingContext.requireRole(required: AdminRole, jsonRpcErrors: Boolean = false): AdminPrincipal? {
     val principal = call.principal<AdminPrincipal>()
     if (principal == null) {
-        call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+        if (jsonRpcErrors) {
+            respondMcpAuthError(call, HttpStatusCode.Unauthorized, McpErrorCodes.UNAUTHORIZED, "invalid or missing token")
+        } else {
+            call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing token"))
+        }
         return null
     }
     if (!principal.hasRole(required)) {
@@ -401,10 +411,12 @@ suspend fun RoutingContext.requireRole(required: AdminRole): AdminPrincipal? {
             result = "denied",
             detail = "required=${required.name.lowercase()}"
         )
-        call.respond(
-            HttpStatusCode.Forbidden,
-            mapOf("error" to "insufficient role (requires ${required.name.lowercase()} or higher)")
-        )
+        val message = "insufficient role (requires ${required.name.lowercase()} or higher)"
+        if (jsonRpcErrors) {
+            respondMcpAuthError(call, HttpStatusCode.Forbidden, McpErrorCodes.PERMISSION_DENIED, message)
+        } else {
+            call.respond(HttpStatusCode.Forbidden, mapOf("error" to message))
+        }
         return null
     }
     return principal

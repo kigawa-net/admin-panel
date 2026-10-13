@@ -47,9 +47,8 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
-import net.kigawa.admin.server.mcp.McpRequest
-import net.kigawa.admin.server.mcp.McpResponse
 import net.kigawa.admin.server.mcp.McpServerInstance
+import net.kigawa.admin.server.mcp.mcpEndpoint
 
 /** Internal cluster DNS for the kube-prometheus-stack Prometheus service (see kigawa01/k8s-system). */
 internal val prometheusUrl =
@@ -1109,13 +1108,7 @@ fun Application.module() {
         // MCP endpoint (issue #200): Streamable HTTP transport for MCP
         // Requires authentication with viewer role or higher
         authenticate("mcp") {
-            post("/mcp") {
-                val principal = requireRole(AdminRole.VIEWER) ?: return@post
-                val mcpServer = net.kigawa.admin.server.mcp.McpServerInstance.getInstance()
-                val requestBody = call.receive<McpRequest>()
-                val response = mcpServer.handleCall(call, principal, requestBody)
-                call.respond(response)
-            }
+            mcpEndpoint(McpServerInstance.getInstance())
         }
 
         // OAuth 2.0 Protected Resource Metadata (RFC 9728)

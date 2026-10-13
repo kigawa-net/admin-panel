@@ -389,6 +389,9 @@ object McpErrorCodes {
     const val INVALID_TOOL = -32002
     const val INVALID_RESOURCE = -32003
     const val PERMISSION_DENIED = -32004
+
+    /** 認証失敗(未認証・トークン不正)。HTTP 401 の JSON-RPC 本文に使う。 */
+    const val UNAUTHORIZED = -32001
 }
 
 /**
