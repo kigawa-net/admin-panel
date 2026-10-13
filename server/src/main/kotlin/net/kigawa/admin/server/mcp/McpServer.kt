@@ -24,6 +24,9 @@ class McpServer {
         // encodeDefaults=false(既定)だと initialize の応答から欠け、クライアントが
         // プロトコルバージョンを受け取れなくなる(実機 E2E で確認済み)。
         encodeDefaults = true
+        // 結果内の未使用の capabilities(resources/prompts/logging など)を null で出さない。
+        // MCP の capabilities 項目は省略可能で、null は仕様違反(Claude Code が拒否する)。
+        explicitNulls = false
     }
 
     fun registerTool(tool: McpTool) {

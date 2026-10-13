@@ -342,7 +342,7 @@ class RbacAuthTest {
 }
 
 /** RS256でテスト用トークンを組み立てる(JWKS側は [TokenFactory.jwk] で公開鍵を配る)。 */
-private class TokenFactory {
+internal class TokenFactory {
     val kid: String = "test-key"
     private val keyPair: KeyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
     val publicKey: RSAPublicKey get() = keyPair.public as RSAPublicKey
@@ -400,7 +400,7 @@ private class TokenFactory {
 
 private const val RbacAuthTestIssuer = "https://example.invalid/realms/test"
 
-private fun jwkOf(keyId: String, publicKey: RSAPublicKey): Jwk {
+internal fun jwkOf(keyId: String, publicKey: RSAPublicKey): Jwk {
     val values = mutableMapOf<String, Any>(
         "kid" to keyId,
         "kty" to "RSA",

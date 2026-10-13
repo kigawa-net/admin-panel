@@ -1,12 +1,11 @@
 package net.kigawa.admin.server.mcp
 
-import io.ktor.server.auth.authenticate
-import io.ktor.server.application.ApplicationCall
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
-import io.ktor.server.routing.routing
 import net.kigawa.admin.server.AdminRole
 import net.kigawa.admin.server.GithubInstallationQueryService
 import net.kigawa.admin.server.requireRole
@@ -14,21 +13,28 @@ import net.kigawa.admin.server.mcp.tools.registerAllTools
 
 /**
  * MCP endpoint installation
- * 
+ *
  * MCP endpoint: /mcp
  * Uses Streamable HTTP transport
- * Requires authentication via existing JWT authentication
+ * Must be called inside `authenticate("mcp")` (認証失敗時は401/403 の JSON-RPC エラー本文)。
  */
-fun io.ktor.server.routing.Routing.mcpEndpoint(mcpServer: McpServer) {
+fun Route.mcpEndpoint(mcpServer: McpServer) {
     // MCP endpoint uses POST for JSON-RPC requests
     post("/mcp") {
         // Require authentication - viewer role is minimum for any MCP access
-        val principal = requireRole(AdminRole.VIEWER) ?: return@post
-        
+        val principal = requireRole(AdminRole.VIEWER, jsonRpcErrors = true) ?: return@post
+
         val requestBody = call.receive<McpRequest>()
-        
+
+        // 通知(id なし、または notifications/*)には JSON-RPC の応答を返さず、
+        // Streamable HTTP の仕様どおり本文なしの 202 Accepted を返す。
+        if (requestBody.id == null || requestBody.method.startsWith("notifications/")) {
+            call.respond(HttpStatusCode.Accepted)
+            return@post
+        }
+
         val response = mcpServer.handleCall(call, principal, requestBody)
-        call.respond(response)
+        respondMcp(call, response)
     }
 }
 
