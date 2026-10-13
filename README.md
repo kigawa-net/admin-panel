@@ -90,33 +90,42 @@ admin-panel は MCP (Model Context Protocol) server としても利用可能で�
 
 - **URL**: `https://admin.kigawa.net/mcp`
 - **Transport**: Streamable HTTP (POST `/mcp`)
-- **認証**: Keycloak (kigawa-net realm) の Bearer access token
+- **認証**: Keycloak (kigawa-net realm) の OAuth。aud が `https://admin.kigawa.net/mcp` の Bearer access token が必要
 
-### Claude Code への登録例
+### 登録方法 1: OAuth ログイン（推奨）
 
 ```bash
-claude mcp add \
-  --transport http \
-  --url https://admin.kigawa.net/mcp \
-  --header "Authorization: Bearer <YOUR_KEYCLOAK_TOKEN>" \
-  admin-panel
+claude mcp add --transport http --client-id admin-panel-mcp --callback-port 8765 admin-panel https://admin.kigawa.net/mcp
 ```
 
-または `claude_desktop_config.json` / `~/.claude/claude_code_config.json` に記述：
+- `--client-id admin-panel-mcp`: Keycloak の公開クライアント（認可コード + PKCE、DCR は使わない）
+- `--callback-port 8765`: コールバックポートを 8765 に固定（Keycloak の redirect URI `http://localhost:8765/callback` と一致させるため）
+- `--scope` は省略時 `local`（そのプロジェクトのみ）。全プロジェクトで使う場合は `--scope user` を付ける
 
-```json
-{
-  "mcpServers": {
-    "admin-panel": {
-      "transport": "http",
-      "url": "https://admin.kigawa.net/mcp",
-      "headers": {
-        "Authorization": "Bearer <YOUR_KEYCLOAK_TOKEN>"
-      }
-    }
-  }
-}
+登録後、Claude Code で `/mcp` を実行し `admin-panel` を選んで認証します。ブラウザで Keycloak のログイン画面が開くので、`admin-panel` クライアントのロールが付与されたユーザーでログインしてください。
+
+仕組み:
+
+1. `/mcp` へ未認証で接続すると、サーバーは 401 と `WWW-Authenticate` ヘッダーを返す
+2. クライアントは `https://admin.kigawa.net/.well-known/oauth-protected-resource`（RFC 9728）を読み、認可サーバー（Keycloak）を知る
+3. Keycloak で認可コード + PKCE（S256）によるログインを行い、access token を取得する
+4. token（aud = `https://admin.kigawa.net/mcp`）を付けて `/mcp` を呼び出す
+
+#### claude.ai のコネクタとして登録する場合
+
+- MCP サーバー URL: `https://admin.kigawa.net/mcp`
+- OAuth クライアント ID: `admin-panel-mcp`
+- コールバック URL: `https://claude.ai/api/mcp/auth_callback`（Keycloak 側で redirect URI として登録済み）
+
+### 登録方法 2: Bearer トークンの直接指定（代替）
+
+```bash
+claude mcp add --transport http --header "Authorization: Bearer <YOUR_KEYCLOAK_TOKEN>" admin-panel https://admin.kigawa.net/mcp
 ```
+
+- token は期限切れになるため、期限切れ後は再取得して再登録が必要
+- token の aud は `https://admin.kigawa.net/mcp` である必要がある（REST API 向けの `aud=admin-panel` の token は `/mcp` で 401 になる）
+- 通常は方法 1（OAuth ログイン）を使ってください
 
 ### 権限ロール
 
@@ -146,8 +155,11 @@ claude mcp add \
 - `github_app.installations.list`
 - `list_ci_policies`, `put_ci_policy`, `delete_ci_policy`
 
-### 注意事項
+### 注意事項・トラブルシュート
 
-- 事前に kigawa-net realm へログインし、`admin-panel` クライアントの適切なロール（viewer/operator/admin）が付与されたユーザーの Bearer token を使用してください
-- token は有効期限内のものを使用してください（期限切れの場合は 401 となります）
+- **前提**: Keycloak 側の設定（k8s-system の `keycloak/admin-panel-mcp-oauth-job.yaml`）が適用済みであること。未適用の環境では認証が成立しません
+- **401 が返る**: token の aud が `https://admin.kigawa.net/mcp` になっていないか、`admin-panel` クライアントのロール（viewer/operator/admin）が付与されていない可能性があります。ロール付与を確認し、`/mcp` から再認証してください
+- **`invalid_scope` エラー**: スコープ `mcp:admin-panel` が Keycloak に定義されていません。クライアントスコープが追加されているか確認してください
+- **redirect_uri 不一致**: コールバックポートは 8765 固定です。`--callback-port 8765` で登録し直してください（別のポートだと Keycloak の redirect URI と一致しません）
+- **期限切れ**: token の有効期限が切れた場合は、`/mcp` から再認証（または Bearer token を再登録）してください
 - RBAC が有効な現行環境では、`KEYCLOAK_RBAC_ENFORCED=false` によるフォールバックは推奨されません
