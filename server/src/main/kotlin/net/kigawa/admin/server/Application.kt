@@ -248,15 +248,20 @@ fun Application.module() {
             val presented = call.request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
             val claims = presented?.let { GithubActionsOidc.verify(httpClient, it, adminPanelActionsAudience) }
             val callerRepository = claims?.repository
+            // issue #227 (観測のみ): 以下の observe* 呼び出しは判定に一切使わない。ログの失敗も握りつぶす。
             if (callerRepository.isNullOrBlank()) {
+                observeCiTokenDecision(false, "unauthenticated", null, null, null, null)
                 call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or missing OIDC token"))
                 return@post
             }
+            observeConstraintMismatches(claims)
             if (!GithubApp.isConfigured) {
+                observeCiTokenDecision(false, "github_app_not_configured", claims, null, null, null)
                 call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "GitHub App not configured"))
                 return@post
             }
             if (!isDatabaseConfigured) {
+                observeCiTokenDecision(false, "database_not_configured", claims, null, null, null)
                 call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "CI token policy database not configured"))
                 return@post
             }
@@ -269,6 +274,7 @@ fun Application.module() {
                 requestedPermissions = request.permissions
             )
             if (policyError != null) {
+                observeCiTokenDecision(false, "policy_denied", claims, owner, request.repositories, request.permissions)
                 call.respond(HttpStatusCode.Forbidden, mapOf("error" to policyError))
                 return@post
             }
@@ -277,6 +283,7 @@ fun Application.module() {
             // possess. Reject before token mint, without bypassing branch protection.
             val missingGrant = installationPermissionMismatch(request.permissions, installation.permissions)
             if (missingGrant != null) {
+                observeCiTokenDecision(false, "installation_permission_insufficient", claims, owner, request.repositories, request.permissions)
                 logger.warn(
                     "event=ci.token.denied reason=installation_permission_insufficient caller={} owner={} permission={} requested={} granted={}",
                     callerRepository, owner, missingGrant.permission, missingGrant.requested, missingGrant.granted
@@ -302,6 +309,7 @@ fun Application.module() {
             // to a caller if the response doesn't contain the required permissions.
             val missingTokenPermission = installationPermissionMismatch(request.permissions, minted.permissions)
             if (missingTokenPermission != null) {
+                observeCiTokenDecision(false, "token_permission_insufficient", claims, owner, request.repositories, request.permissions)
                 logger.warn(
                     "event=ci.token.denied reason=token_permission_insufficient caller={} owner={} permission={} requested={} granted={}",
                     callerRepository, owner, missingTokenPermission.permission,
@@ -322,6 +330,7 @@ fun Application.module() {
                 "event=ci.token.minted caller={} owner={} repositories={} requestedPermissions={}",
                 callerRepository, owner, request.repositories, request.permissions?.keys?.sorted()
             )
+            observeCiTokenDecision(true, "minted", claims, owner, request.repositories, request.permissions)
             call.respond(minted)
         }
 

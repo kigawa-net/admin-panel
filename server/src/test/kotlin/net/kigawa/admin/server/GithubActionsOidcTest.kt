@@ -18,7 +18,9 @@ import java.time.Instant
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class GithubActionsOidcTest {
     // GithubActionsOidc caches fetched JWKS by kid in a process-wide singleton, so each test
@@ -43,7 +45,8 @@ class GithubActionsOidcTest {
         expiresAt: Long = Instant.now().epochSecond + 300,
         notBefore: Long? = null,
         headerKid: String? = kid,
-        signWith: PrivateKey = keyPair.private
+        signWith: PrivateKey = keyPair.private,
+        extraClaims: String = ""
     ): String {
         val header = """{"alg":"RS256"${if (headerKid != null) ",\"kid\":\"$headerKid\"" else ""}}"""
         val payload = buildString {
@@ -52,6 +55,7 @@ class GithubActionsOidcTest {
             if (repository != null) append(",\"repository\":\"$repository\"")
             append(",\"exp\":$expiresAt")
             if (notBefore != null) append(",\"nbf\":$notBefore")
+            if (extraClaims.isNotEmpty()) append(",$extraClaims")
             append("}")
         }
         val signingInput = "${base64Url(header.toByteArray())}.${base64Url(payload.toByteArray())}"
@@ -128,5 +132,103 @@ class GithubActionsOidcTest {
     fun `rejects an unknown key id`() = runBlocking {
         val claims = GithubActionsOidc.verify(mockClient(), token(headerKid = "unknown-kid"), audience)
         assertNull(claims)
+    }
+
+    // ---- issue #227 (PR A): 観測用クレーム。判定は変わらないことを確かめる ----
+
+    @Test
+    fun `extracts observed claims from a validly signed token`() = runBlocking {
+        val claims = GithubActionsOidc.verify(
+            mockClient(),
+            token(
+                extraClaims = """
+                    "repository_id":"1347995166","ref":"refs/heads/main","event_name":"push",
+                    "workflow_ref":"kigawa-net/kivra/.github/workflows/cd.yml@refs/heads/main",
+                    "job_workflow_ref":"kigawa-net/kinfra/.github/workflows/x.yml@refs/heads/main",
+                    "environment":"dev","sha":"abc123","actor":"kigawa"
+                """.trimIndent().replace("\n", "")
+            ),
+            audience
+        )
+        val observed = claims?.observed
+        assertEquals("1347995166", observed?.repositoryId)
+        assertEquals("refs/heads/main", observed?.ref)
+        assertEquals("push", observed?.eventName)
+        assertEquals("kigawa-net/kivra/.github/workflows/cd.yml@refs/heads/main", observed?.workflowRef)
+        assertEquals("kigawa-net/kinfra/.github/workflows/x.yml@refs/heads/main", observed?.jobWorkflowRef)
+        assertEquals("dev", observed?.environment)
+        assertEquals("abc123", observed?.sha)
+        assertEquals("kigawa", observed?.actor)
+    }
+
+    @Test
+    fun `malformed observed claims do not reject a validly signed token`() = runBlocking {
+        // 判定に使う repository は従来どおり通る。観測用の値は型違い・長すぎ・制御文字で null になるだけ。
+        val tooLong = "a".repeat(OBSERVED_CLAIM_MAX_LENGTH + 1)
+        val claims = GithubActionsOidc.verify(
+            mockClient(),
+            token(
+                extraClaims = """
+                    "repository_id":1347995166,"event_name":null,
+                    "workflow_ref":"$tooLong","job_workflow_ref":"line1\nline2","environment":true
+                """.trimIndent().replace("\n", "")
+            ),
+            audience
+        )
+        assertEquals("OneServerMC/RpgCore", claims?.repository)
+        assertNull(claims?.observed?.repositoryId)
+        assertNull(claims?.observed?.ref)
+        assertNull(claims?.observed?.eventName)
+        assertNull(claims?.observed?.workflowRef)
+        assertNull(claims?.observed?.jobWorkflowRef)
+        assertNull(claims?.observed?.environment)
+    }
+
+    @Test
+    fun `a non-string ref still rejects the token as before`() = runBlocking {
+        // `ref` は #227 以前から ActionsClaims に含まれ、型違いはデコード失敗 = 401 だった。その挙動は変えない。
+        val claims = GithubActionsOidc.verify(
+            mockClient(),
+            token(extraClaims = "\"ref\":[\"refs/heads/main\"]"),
+            audience
+        )
+        assertNull(claims)
+    }
+
+    @Test
+    fun `a token whose observed claims miss the expected constraints is still verified`() = runBlocking {
+        // 観測の制約(CI_TOKEN_OBSERVE_CONSTRAINTS)は verify() に渡らない。不一致でも検証結果は変わらない。
+        val claims = GithubActionsOidc.verify(
+            mockClient(),
+            token(extraClaims = "\"event_name\":\"pull_request\",\"ref\":\"refs/heads/feature\""),
+            audience
+        )
+        assertEquals("OneServerMC/RpgCore", claims?.repository)
+        assertEquals("pull_request", claims?.observed?.eventName)
+        assertEquals("refs/heads/feature", claims?.observed?.ref)
+    }
+
+    @Test
+    fun `observation logs never contain the token, its signature, or unobserved claims`() = runBlocking {
+        val marker = "MARKER_UNOBSERVED_CLAIM_${java.util.UUID.randomUUID()}"
+        val rawToken = token(extraClaims = "\"secret_note\":\"$marker\"")
+        val signature = rawToken.substringAfterLast('.')
+        val captured = captureCiTokenLogs {
+            val claims = runBlocking { GithubActionsOidc.verify(mockClient(), rawToken, audience) }
+            observeCiTokenDecision(
+                allowed = true,
+                reason = "minted",
+                claims = claims,
+                owner = "OneServerMC",
+                repositories = listOf("infra"),
+                permissions = mapOf("contents" to "write")
+            )
+        }
+        assertTrue(captured.isNotEmpty())
+        val all = captured.joinToString("\n")
+        assertFalse(all.contains(rawToken))
+        assertFalse(all.contains(signature))
+        assertFalse(all.contains(marker))
+        assertFalse(all.contains("Bearer"))
     }
 }
