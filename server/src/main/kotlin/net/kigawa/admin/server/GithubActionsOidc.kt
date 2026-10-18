@@ -5,7 +5,10 @@ import io.ktor.client.call.body
 import io.ktor.client.request.get
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import java.math.BigInteger
 import java.security.KeyFactory
 import java.security.PublicKey
@@ -34,7 +37,9 @@ data class ActionsClaims(
     @SerialName("repository") val repository: String? = null,
     @SerialName("ref") val ref: String? = null,
     @SerialName("exp") val expiresAt: Long,
-    @SerialName("nbf") val notBefore: Long? = null
+    @SerialName("nbf") val notBefore: Long? = null,
+    /** issue #227: 観測専用の追加クレーム。判定には使わず、デコードの失敗にもしない(verify() が後から設定する)。 */
+    @Transient val observed: ObservedActionsClaims = ObservedActionsClaims.NONE,
 )
 
 @Serializable
@@ -73,9 +78,12 @@ object GithubActionsOidc {
         }.getOrNull() ?: return null
         if (header.alg != "RS256") return null
 
+        val payloadText = runCatching { String(base64UrlDecode(payloadPart)) }.getOrNull() ?: return null
         val claims = runCatching {
-            jwtJson.decodeFromString<ActionsClaims>(String(base64UrlDecode(payloadPart)))
+            jwtJson.decodeFromString<ActionsClaims>(payloadText)
         }.getOrNull() ?: return null
+        // 観測用の追加クレームは型違い・欠落でも検証を失敗させない(ObservedActionsClaims 側で null にする)。
+        val payloadObject: JsonObject? = runCatching { jwtJson.parseToJsonElement(payloadText).jsonObject }.getOrNull()
 
         if (claims.issuer != GITHUB_ACTIONS_OIDC_ISSUER) return null
         if (claims.audience != expectedAudience) return null
@@ -94,7 +102,11 @@ object GithubActionsOidc {
             }.verify(base64UrlDecode(signaturePart))
         }.getOrDefault(false)
 
-        return if (signatureValid) claims else null
+        return if (signatureValid) {
+            claims.copy(observed = payloadObject?.let { ObservedActionsClaims.from(it) } ?: ObservedActionsClaims.NONE)
+        } else {
+            null
+        }
     }
 
     private suspend fun findKey(client: HttpClient, kid: String?): Jwk? {
