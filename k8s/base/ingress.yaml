@@ -31,6 +31,16 @@ spec:
                 name: admin-panel-api
                 port:
                   number: 8080
+          # 外形監視用ヘルスチェック。APIサーバーの /health は無認証で "OK" を返す。
+          # フロント(nginx)は全パスを index.html にフォールバックするため、
+          # ここで API へ明示的に振り分けないと 200 の HTML が返ってしまう。
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: admin-panel-api
+                port:
+                  number: 8080
           - path: /
             pathType: Prefix
             backend:
